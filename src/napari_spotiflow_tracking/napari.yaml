@@ -1,0 +1,15 @@
+name: napari-spotiflow-tracking
+display_name: Spotiflow Tracking
+contributions:
+  commands:
+    - id: napari-spotiflow-tracking.detection_widget
+      python_name: napari_spotiflow_tracking._detection_widget:DetectionWidget
+      title: Spot Detection
+    - id: napari-spotiflow-tracking.tracking_widget
+      python_name: napari_spotiflow_tracking._tracking_widget:TrackingWidget
+      title: Spot Tracking
+  widgets:
+    - command: napari-spotiflow-tracking.detection_widget
+      display_name: Spot Detection
+    - command: napari-spotiflow-tracking.tracking_widget
+      display_name: Spot Tracking
