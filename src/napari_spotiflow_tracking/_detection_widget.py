@@ -322,14 +322,62 @@ class DetectionWidget(QWidget):
         if not path:
             return
 
-        if self._last_points.shape[1] == 3:
-            columns = ["frame", "y", "x"]
-        else:
-            columns = ["y", "x"]
+        # Check if mask and image layers exist for region properties
+        mask_layer = None
+        image_layer = None
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Labels) and "Spot Masks" in layer.name:
+                mask_layer = layer
+            if isinstance(layer, napari.layers.Image) and layer.name == self._image_combo.currentText():
+                image_layer = layer
 
-        df = pd.DataFrame(self._last_points, columns=columns)
+        if mask_layer is not None and image_layer is not None:
+            self._export_with_regionprops(path, mask_layer, image_layer)
+        else:
+            # Fallback: export coordinates only
+            if self._last_points.shape[1] == 3:
+                columns = ["frame", "y", "x"]
+            else:
+                columns = ["y", "x"]
+            df = pd.DataFrame(self._last_points, columns=columns)
+            df.to_csv(path, index=False)
+            show_info(f"Exported {len(df)} blobs to {path}")
+
+    def _export_with_regionprops(self, path: str, mask_layer, image_layer):
+        """Export blobs with region properties from mask and image."""
+        from skimage.measure import regionprops_table
+
+        properties = [
+            "label", "area", "centroid", "mean_intensity", "max_intensity",
+            "min_intensity", "bbox", "equivalent_diameter", "perimeter",
+            "solidity",
+        ]
+
+        mask_data = np.asarray(mask_layer.data)
+        image_data = np.asarray(image_layer.data)
+
+        if mask_data.ndim == 2:
+            table = regionprops_table(
+                mask_data, intensity_image=image_data, properties=properties,
+            )
+            df = pd.DataFrame(table)
+        elif mask_data.ndim == 3:
+            frames = []
+            for t in range(mask_data.shape[0]):
+                table = regionprops_table(
+                    mask_data[t], intensity_image=image_data[t],
+                    properties=properties,
+                )
+                frame_df = pd.DataFrame(table)
+                frame_df.insert(0, "frame", t)
+                frames.append(frame_df)
+            df = pd.concat(frames, ignore_index=True)
+        else:
+            show_error(f"Unsupported mask dimensions: {mask_data.ndim}D")
+            return
+
         df.to_csv(path, index=False)
-        show_info(f"Exported {len(df)} blobs to {path}")
+        show_info(f"Exported {len(df)} blobs with region properties to {path}")
 
     def _on_detection_error(self, msg: str):
         if self._pbr is not None:
