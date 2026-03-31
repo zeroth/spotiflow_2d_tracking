@@ -1,26 +1,148 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.ndimage import gaussian_filter
 
 
-def remove_background(image: np.ndarray, sigma: float = 10.0) -> np.ndarray:
+def _get_device(use_gpu: bool = False) -> str:
+    """Return 'cuda' if requested and available, else 'cpu'."""
+    if use_gpu:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+        except ImportError:
+            pass
+    return "cpu"
+
+
+def remove_background(
+    image: np.ndarray,
+    sigma: float = 10.0,
+    device: str = "cpu",
+) -> np.ndarray:
     """Remove background by subtracting a Gaussian low-pass filtered image.
 
-    Same approach as spotiflow's BackgroundRemover: subtracts a blurred
-    version of the image to remove low-frequency background while preserving
-    spot-scale features.
+    Uses PyTorch separable convolution (same approach as spotiflow's
+    BackgroundRemover) for GPU acceleration. Falls back to scipy on CPU
+    when torch is not available.
 
     Args:
         image: 2D image (Y, X).
         sigma: standard deviation of the Gaussian filter. Larger values
                remove broader background structures.
+        device: 'cuda' for GPU, 'cpu' for CPU.
 
     Returns:
-        Background-subtracted image.
+        Background-subtracted image (float64).
     """
-    background = gaussian_filter(image.astype(np.float64), sigma=sigma)
-    return image - background
+    try:
+        import torch
+        import torch.nn.functional as F
+        return _remove_background_torch(image, sigma, device, torch, F)
+    except ImportError:
+        from scipy.ndimage import gaussian_filter
+        background = gaussian_filter(image.astype(np.float64), sigma=sigma)
+        return image.astype(np.float64) - background
+
+
+def _remove_background_torch(image, sigma, device, torch, F):
+    """Torch-based separable Gaussian background subtraction."""
+    # Build 1D Gaussian kernel (span -2σ to +2σ like spotiflow)
+    radius = max(int(np.ceil(sigma * 2)), 1)
+    half = radius
+    kernel_size = 2 * half + 1
+    t = torch.linspace(-2, 2, kernel_size, dtype=torch.float32)
+    h = torch.exp(-t ** 2)
+    h = h / h.sum()
+
+    wy = h.reshape(1, 1, kernel_size, 1)
+    wx = h.reshape(1, 1, 1, kernel_size)
+
+    # Image to tensor (1, 1, H, W)
+    x = torch.from_numpy(image.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+
+    if device == "cuda":
+        x = x.cuda()
+        wy = wy.cuda()
+        wx = wx.cuda()
+
+    # Separable convolution with reflect padding
+    y = F.pad(x, pad=(half, half, half, half), mode="reflect")
+    y = F.conv2d(y, weight=wy, stride=1, padding="valid")
+    y = F.conv2d(y, weight=wx, stride=1, padding="valid")
+    result = x - y
+
+    return result.squeeze().cpu().numpy().astype(np.float64)
+
+
+def remove_background_stack(
+    image_stack: np.ndarray,
+    sigma: float = 10.0,
+    device: str = "cpu",
+) -> np.ndarray:
+    """Remove background from a T,Y,X stack using batch processing.
+
+    Processes all frames in a single batched torch operation for speed.
+    Falls back to per-frame scipy if torch is unavailable.
+
+    Args:
+        image_stack: 3D array (T, Y, X).
+        sigma: Gaussian filter sigma.
+        device: 'cuda' or 'cpu'.
+
+    Returns:
+        Background-subtracted stack (float64).
+    """
+    if image_stack.ndim != 3:
+        raise ValueError(f"Expected 3D (T,Y,X) stack, got {image_stack.ndim}D")
+
+    try:
+        import torch
+        import torch.nn.functional as F
+        return _remove_background_stack_torch(image_stack, sigma, device, torch, F)
+    except ImportError:
+        from scipy.ndimage import gaussian_filter
+        result = np.empty_like(image_stack, dtype=np.float64)
+        for t in range(image_stack.shape[0]):
+            bg = gaussian_filter(image_stack[t].astype(np.float64), sigma=sigma)
+            result[t] = image_stack[t].astype(np.float64) - bg
+        return result
+
+
+def _remove_background_stack_torch(image_stack, sigma, device, torch, F):
+    """Batch torch-based background subtraction for entire stack."""
+    radius = max(int(np.ceil(sigma * 2)), 1)
+    half = radius
+    kernel_size = 2 * half + 1
+    t = torch.linspace(-2, 2, kernel_size, dtype=torch.float32)
+    h = torch.exp(-t ** 2)
+    h = h / h.sum()
+
+    wy = h.reshape(1, 1, kernel_size, 1)
+    wx = h.reshape(1, 1, 1, kernel_size)
+
+    # Stack to tensor (T, 1, H, W)
+    x = torch.from_numpy(image_stack.astype(np.float32)).unsqueeze(1)
+
+    if device == "cuda":
+        x = x.cuda()
+        wy = wy.cuda()
+        wx = wx.cuda()
+
+    # Process in batches to avoid OOM on large stacks
+    batch_size = 64
+    n_frames = x.shape[0]
+    results = []
+
+    for i in range(0, n_frames, batch_size):
+        batch = x[i:i + batch_size]
+        y = F.pad(batch, pad=(half, half, half, half), mode="reflect")
+        y = F.conv2d(y, weight=wy, stride=1, padding="valid")
+        y = F.conv2d(y, weight=wx, stride=1, padding="valid")
+        results.append((batch - y).cpu())
+
+    result = torch.cat(results, dim=0).squeeze(1).numpy().astype(np.float64)
+    return result
 
 
 def walking_average(image_stack: np.ndarray, window: int = 3) -> np.ndarray:
@@ -49,7 +171,6 @@ def walking_average(image_stack: np.ndarray, window: int = 3) -> np.ndarray:
 
     # Cumulative sum for efficient rolling mean
     cumsum = np.cumsum(image_stack.astype(np.float64), axis=0)
-    # Prepend zeros for the cumsum trick
     cumsum = np.concatenate([np.zeros_like(cumsum[:1]), cumsum], axis=0)
 
     for t in range(n_frames):

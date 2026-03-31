@@ -6,6 +6,7 @@ import numpy as np
 from napari.utils.notifications import show_info, show_error
 from napari.utils import progress
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QGroupBox,
@@ -19,6 +20,7 @@ from qtpy.QtWidgets import (
 
 from napari_spotiflow_tracking._preprocessing import (
     remove_background,
+    remove_background_stack,
     walking_average,
 )
 
@@ -49,6 +51,17 @@ class PreProcessingWidget(QWidget):
         input_layout.addLayout(row)
         input_group.setLayout(input_layout)
         layout.addWidget(input_group)
+
+        # Device
+        self._use_gpu = QCheckBox("Use GPU (CUDA)")
+        try:
+            import torch
+            self._use_gpu.setChecked(torch.cuda.is_available())
+            self._use_gpu.setEnabled(torch.cuda.is_available())
+        except ImportError:
+            self._use_gpu.setChecked(False)
+            self._use_gpu.setEnabled(False)
+        layout.addWidget(self._use_gpu)
 
         # Background removal
         bg_group = QGroupBox("Background Removal")
@@ -130,15 +143,13 @@ class PreProcessingWidget(QWidget):
             return
 
         sigma = self._bg_sigma.value()
-        show_info("Removing background...")
+        device = "cuda" if self._use_gpu.isChecked() else "cpu"
+        show_info(f"Removing background (sigma={sigma}, device={device})...")
 
         if image.ndim == 2:
-            result = remove_background(image, sigma=sigma)
+            result = remove_background(image, sigma=sigma, device=device)
         elif image.ndim == 3:
-            frames = []
-            for t in progress(range(image.shape[0]), desc="Removing background"):
-                frames.append(remove_background(image[t], sigma=sigma))
-            result = np.stack(frames, axis=0)
+            result = remove_background_stack(image, sigma=sigma, device=device)
         else:
             show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
             return
