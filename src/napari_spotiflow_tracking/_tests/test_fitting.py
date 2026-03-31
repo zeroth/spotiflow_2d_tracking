@@ -87,3 +87,77 @@ class TestSpotFit2D:
         fit.paint_mask(mask, center_yx=(32, 32), label=1)
 
         assert np.sum(mask > 0) == 0  # nothing painted
+
+
+def _make_gaussian_image(cy, cx, sigma, size=64, amplitude=200.0, bg=20.0):
+    """Create a synthetic image with a single 2D Gaussian spot."""
+    yy, xx = np.mgrid[0:size, 0:size]
+    image = bg + amplitude * np.exp(
+        -((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * sigma ** 2)
+    )
+    return image.astype(np.float32)
+
+
+class TestFitAndMask2D:
+    def test_single_spot_fit(self):
+        from napari_spotiflow_tracking._fitting import fit_and_mask_2d
+
+        image = _make_gaussian_image(32, 32, sigma=2.5)
+        points = np.array([[32, 32]])
+
+        result = fit_and_mask_2d(image, points, patch_radius=6)
+
+        assert len(result.fits) == 1
+        assert result.fits[0].success is True
+        assert result.fits[0].sigma_y == pytest.approx(2.5, abs=0.5)
+        assert result.fits[0].sigma_x == pytest.approx(2.5, abs=0.5)
+        assert result.mask[32, 32] > 0  # mask painted at center
+
+    def test_multiple_spots(self):
+        from napari_spotiflow_tracking._fitting import fit_and_mask_2d
+
+        image = np.zeros((64, 64), dtype=np.float32) + 20.0
+        yy, xx = np.mgrid[0:64, 0:64]
+        image += 200 * np.exp(-((yy - 15) ** 2 + (xx - 15) ** 2) / (2 * 2.0 ** 2))
+        image += 200 * np.exp(-((yy - 45) ** 2 + (xx - 45) ** 2) / (2 * 2.0 ** 2))
+        points = np.array([[15, 15], [45, 45]])
+
+        result = fit_and_mask_2d(image, points, patch_radius=6)
+
+        assert len(result.fits) == 2
+        assert result.mask[15, 15] == 1
+        assert result.mask[45, 45] == 2
+
+    def test_mask_dtype_is_uint16(self):
+        from napari_spotiflow_tracking._fitting import fit_and_mask_2d
+
+        image = _make_gaussian_image(32, 32, sigma=2.0)
+        points = np.array([[32, 32]])
+
+        result = fit_and_mask_2d(image, points)
+
+        assert result.mask.dtype == np.uint16
+
+    def test_fallback_radius_on_failed_fit(self):
+        from napari_spotiflow_tracking._fitting import fit_and_mask_2d
+
+        # Flat image — fitting should fail
+        image = np.ones((64, 64), dtype=np.float32) * 50.0
+        points = np.array([[32, 32]])
+
+        result = fit_and_mask_2d(image, points, fallback_radius=3)
+
+        assert len(result.fits) == 1
+        assert result.fits[0].success is False
+        assert result.mask[32, 32] > 0
+
+    def test_empty_points_returns_empty(self):
+        from napari_spotiflow_tracking._fitting import fit_and_mask_2d
+
+        image = _make_gaussian_image(32, 32, sigma=2.0)
+        points = np.empty((0, 2))
+
+        result = fit_and_mask_2d(image, points)
+
+        assert len(result.fits) == 0
+        assert np.sum(result.mask) == 0
