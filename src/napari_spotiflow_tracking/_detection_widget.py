@@ -357,13 +357,15 @@ class DetectionWidget(QWidget):
         image_data = np.asarray(image_layer.data)
 
         if mask_data.ndim == 2:
+            show_info("Computing region properties...")
             table = regionprops_table(
                 mask_data, intensity_image=image_data, properties=properties,
             )
             df = pd.DataFrame(table)
         elif mask_data.ndim == 3:
+            show_info("Computing region properties...")
             frames = []
-            for t in range(mask_data.shape[0]):
+            for t in progress(range(mask_data.shape[0]), desc="Computing region properties"):
                 table = regionprops_table(
                     mask_data[t], intensity_image=image_data[t],
                     properties=properties,
