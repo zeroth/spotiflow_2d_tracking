@@ -22,7 +22,7 @@ from napari_spotiflow_tracking._preprocessing import (
 )
 
 
-class CleanupWidget(QWidget):
+class PreProcessingWidget(QWidget):
     def __init__(self, napari_viewer: napari.Viewer):
         super().__init__()
         self.viewer = napari_viewer
