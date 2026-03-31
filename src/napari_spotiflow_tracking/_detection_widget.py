@@ -66,20 +66,6 @@ class DetectionWidget(QWidget):
         method_row.addWidget(self._method_combo)
         layout.addLayout(method_row)
 
-        # Background removal (shared by both methods)
-        bg_row = QHBoxLayout()
-        self._remove_bg_cb = QCheckBox("Remove background")
-        self._remove_bg_cb.setChecked(False)
-        self._remove_bg_cb.toggled.connect(lambda checked: self._disk_size.setEnabled(checked))
-        bg_row.addWidget(self._remove_bg_cb)
-        bg_row.addWidget(QLabel("Disk size:"))
-        self._disk_size = QSpinBox()
-        self._disk_size.setRange(1, 100)
-        self._disk_size.setValue(10)
-        self._disk_size.setEnabled(False)
-        bg_row.addWidget(self._disk_size)
-        layout.addLayout(bg_row)
-
         # Spotiflow parameters
         self._spotiflow_group = QGroupBox("Spotiflow Parameters")
         spoti_layout = QVBoxLayout()
@@ -313,8 +299,6 @@ class DetectionWidget(QWidget):
             prob_thresh=None if self._auto_prob_cb.isChecked() else self._prob_thresh.value(),
             min_distance=self._min_distance.value(),
             generate_mask=self._generate_mask_cb.isChecked(),
-            remove_bg=self._remove_bg_cb.isChecked(),
-            disk_size=self._disk_size.value(),
             log_min_sigma=self._log_min_sigma.value(),
             log_max_sigma=self._log_max_sigma.value(),
             log_num_sigma=self._log_num_sigma.value(),
