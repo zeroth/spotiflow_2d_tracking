@@ -6,11 +6,8 @@ import numpy as np
 from qtpy.QtCore import QThread, Signal
 
 from napari_spotiflow_tracking._fitting import fit_and_mask_2d
-from napari_spotiflow_tracking._segmentation import (
-    detect_spots,
-    detect_spots_log,
-    remove_background,
-)
+from napari_spotiflow_tracking._preprocessing import remove_background
+from napari_spotiflow_tracking._segmentation import detect_spots, detect_spots_log
 
 
 class DetectionWorker(QThread):
@@ -35,7 +32,7 @@ class DetectionWorker(QThread):
         fallback_radius: float = 2.0,
         method: str = "spotiflow",
         remove_bg: bool = False,
-        disk_size: int = 10,
+        bg_sigma: float = 10.0,
         log_min_sigma: float = 2,
         log_max_sigma: float = 10,
         log_num_sigma: int = 10,
@@ -52,7 +49,7 @@ class DetectionWorker(QThread):
         self._fallback_radius = fallback_radius
         self._method = method
         self._remove_bg = remove_bg
-        self._disk_size = disk_size
+        self._bg_sigma = bg_sigma
         self._log_min_sigma = log_min_sigma
         self._log_max_sigma = log_max_sigma
         self._log_num_sigma = log_num_sigma
@@ -61,7 +58,7 @@ class DetectionWorker(QThread):
     def _process_frame(self, frame_image: np.ndarray):
         """Detect spots and optionally fit Gaussians for a single 2D frame."""
         if self._remove_bg:
-            frame_image = remove_background(frame_image, disk_size=self._disk_size)
+            frame_image = remove_background(frame_image, sigma=self._bg_sigma)
 
         if self._method == "spotiflow":
             points, _ = detect_spots(

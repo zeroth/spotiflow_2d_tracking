@@ -7,6 +7,7 @@ from napari.utils.notifications import show_info, show_error
 from napari.utils import progress
 from qtpy.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -53,13 +54,15 @@ class PreProcessingWidget(QWidget):
         bg_group = QGroupBox("Background Removal")
         bg_layout = QVBoxLayout()
 
-        row_disk = QHBoxLayout()
-        row_disk.addWidget(QLabel("Disk size:"))
-        self._disk_size = QSpinBox()
-        self._disk_size.setRange(1, 100)
-        self._disk_size.setValue(10)
-        row_disk.addWidget(self._disk_size)
-        bg_layout.addLayout(row_disk)
+        row_sigma = QHBoxLayout()
+        row_sigma.addWidget(QLabel("Sigma:"))
+        self._bg_sigma = QDoubleSpinBox()
+        self._bg_sigma.setRange(0.5, 200.0)
+        self._bg_sigma.setSingleStep(1.0)
+        self._bg_sigma.setValue(10.0)
+        self._bg_sigma.setToolTip("Gaussian filter sigma — larger values remove broader background")
+        row_sigma.addWidget(self._bg_sigma)
+        bg_layout.addLayout(row_sigma)
 
         self._bg_btn = QPushButton("Remove Background")
         self._bg_btn.clicked.connect(self._run_remove_background)
@@ -126,15 +129,15 @@ class PreProcessingWidget(QWidget):
         if image is None:
             return
 
-        disk_size = self._disk_size.value()
+        sigma = self._bg_sigma.value()
         show_info("Removing background...")
 
         if image.ndim == 2:
-            result = remove_background(image, disk_size=disk_size)
+            result = remove_background(image, sigma=sigma)
         elif image.ndim == 3:
             frames = []
             for t in progress(range(image.shape[0]), desc="Removing background"):
-                frames.append(remove_background(image[t], disk_size=disk_size))
+                frames.append(remove_background(image[t], sigma=sigma))
             result = np.stack(frames, axis=0)
         else:
             show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")

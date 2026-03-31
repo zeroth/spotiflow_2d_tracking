@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import numpy as np
-from skimage import morphology
+from scipy.ndimage import gaussian_filter
 
 
-def remove_background(image: np.ndarray, disk_size: int = 10) -> np.ndarray:
-    """Remove background using morphological reconstruction.
+def remove_background(image: np.ndarray, sigma: float = 10.0) -> np.ndarray:
+    """Remove background by subtracting a Gaussian low-pass filtered image.
 
-    Erodes the image with a disk structuring element, reconstructs by
-    dilation, and subtracts the result from the original.
+    Same approach as spotiflow's BackgroundRemover: subtracts a blurred
+    version of the image to remove low-frequency background while preserving
+    spot-scale features.
+
+    Args:
+        image: 2D image (Y, X).
+        sigma: standard deviation of the Gaussian filter. Larger values
+               remove broader background structures.
+
+    Returns:
+        Background-subtracted image.
     """
-    seed = morphology.erosion(image, morphology.disk(disk_size))
-    background = morphology.reconstruction(seed, image, method="dilation")
+    background = gaussian_filter(image.astype(np.float64), sigma=sigma)
     return image - background
 
 

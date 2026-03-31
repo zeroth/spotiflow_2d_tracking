@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-from skimage import morphology
 from skimage.exposure import rescale_intensity
 from skimage.feature import blob_log
 
@@ -37,20 +36,6 @@ def detect_spots(
         verbose=False,
     )
     return points, details
-
-
-# ── Background removal ───────────────────────────────────────────────
-
-
-def remove_background(image: np.ndarray, disk_size: int = 10) -> np.ndarray:
-    """Remove background using morphological reconstruction.
-
-    Erodes the image with a disk structuring element, reconstructs by
-    dilation, and subtracts the result from the original.
-    """
-    seed = morphology.erosion(image, morphology.disk(disk_size))
-    background = morphology.reconstruction(seed, image, method="dilation")
-    return image - background
 
 
 # ── LoG blob detection ───────────────────────────────────────────────
