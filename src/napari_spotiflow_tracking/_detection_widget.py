@@ -57,12 +57,38 @@ class DetectionWidget(QWidget):
         input_group.setLayout(input_layout)
         layout.addWidget(input_group)
 
+        # Detection method
+        method_row = QHBoxLayout()
+        method_row.addWidget(QLabel("Method:"))
+        self._method_combo = QComboBox()
+        self._method_combo.addItems(["Spotiflow", "LoG"])
+        self._method_combo.currentTextChanged.connect(self._on_method_changed)
+        method_row.addWidget(self._method_combo)
+        layout.addLayout(method_row)
+
+        # Background removal (shared by both methods)
+        bg_row = QHBoxLayout()
+        self._remove_bg_cb = QCheckBox("Remove background")
+        self._remove_bg_cb.setChecked(False)
+        self._remove_bg_cb.toggled.connect(lambda checked: self._disk_size.setEnabled(checked))
+        bg_row.addWidget(self._remove_bg_cb)
+        bg_row.addWidget(QLabel("Disk size:"))
+        self._disk_size = QSpinBox()
+        self._disk_size.setRange(1, 100)
+        self._disk_size.setValue(10)
+        self._disk_size.setEnabled(False)
+        bg_row.addWidget(self._disk_size)
+        layout.addLayout(bg_row)
+
+        # Spotiflow parameters
+        self._spotiflow_group = QGroupBox("Spotiflow Parameters")
+        spoti_layout = QVBoxLayout()
+
         # Model selection
-        model_group = QGroupBox("Model")
-        model_layout = QVBoxLayout()
+        spoti_layout.addWidget(QLabel("Model:"))
         self._model_combo = QComboBox()
         self._model_combo.addItems(["general", "synth_complex", "hybiss", "fluo_live"])
-        model_layout.addWidget(self._model_combo)
+        spoti_layout.addWidget(self._model_combo)
         custom_row = QHBoxLayout()
         self._custom_model_path = QLabel("")
         self._custom_model_path.setWordWrap(True)
@@ -70,13 +96,7 @@ class DetectionWidget(QWidget):
         browse_btn = QPushButton("Custom model...")
         browse_btn.clicked.connect(self._browse_custom_model)
         custom_row.addWidget(browse_btn)
-        model_layout.addLayout(custom_row)
-        model_group.setLayout(model_layout)
-        layout.addWidget(model_group)
-
-        # Detection parameters
-        params_group = QGroupBox("Detection Parameters")
-        params_layout = QVBoxLayout()
+        spoti_layout.addLayout(custom_row)
 
         row_prob = QHBoxLayout()
         self._auto_prob_cb = QCheckBox("Auto")
@@ -91,7 +111,7 @@ class DetectionWidget(QWidget):
         self._prob_thresh.setEnabled(False)
         row_prob.addWidget(self._prob_thresh)
         row_prob.addWidget(self._auto_prob_cb)
-        params_layout.addLayout(row_prob)
+        spoti_layout.addLayout(row_prob)
 
         row_dist = QHBoxLayout()
         row_dist.addWidget(QLabel("Min distance:"))
@@ -99,10 +119,63 @@ class DetectionWidget(QWidget):
         self._min_distance.setRange(1, 50)
         self._min_distance.setValue(2)
         row_dist.addWidget(self._min_distance)
-        params_layout.addLayout(row_dist)
+        spoti_layout.addLayout(row_dist)
 
-        params_group.setLayout(params_layout)
-        layout.addWidget(params_group)
+        # Device
+        self._use_gpu = QCheckBox("Use GPU (CUDA)")
+        try:
+            import torch
+            self._use_gpu.setChecked(torch.cuda.is_available())
+            self._use_gpu.setEnabled(torch.cuda.is_available())
+        except ImportError:
+            self._use_gpu.setChecked(False)
+            self._use_gpu.setEnabled(False)
+        spoti_layout.addWidget(self._use_gpu)
+
+        self._spotiflow_group.setLayout(spoti_layout)
+        layout.addWidget(self._spotiflow_group)
+
+        # LoG parameters
+        self._log_group = QGroupBox("LoG Parameters")
+        log_layout = QVBoxLayout()
+
+        row_min_s = QHBoxLayout()
+        row_min_s.addWidget(QLabel("Min sigma:"))
+        self._log_min_sigma = QDoubleSpinBox()
+        self._log_min_sigma.setRange(0.1, 50.0)
+        self._log_min_sigma.setValue(2.0)
+        row_min_s.addWidget(self._log_min_sigma)
+        log_layout.addLayout(row_min_s)
+
+        row_max_s = QHBoxLayout()
+        row_max_s.addWidget(QLabel("Max sigma:"))
+        self._log_max_sigma = QDoubleSpinBox()
+        self._log_max_sigma.setRange(0.1, 100.0)
+        self._log_max_sigma.setValue(10.0)
+        row_max_s.addWidget(self._log_max_sigma)
+        log_layout.addLayout(row_max_s)
+
+        row_num_s = QHBoxLayout()
+        row_num_s.addWidget(QLabel("Num sigma:"))
+        self._log_num_sigma = QSpinBox()
+        self._log_num_sigma.setRange(1, 50)
+        self._log_num_sigma.setValue(10)
+        row_num_s.addWidget(self._log_num_sigma)
+        log_layout.addLayout(row_num_s)
+
+        row_thresh = QHBoxLayout()
+        row_thresh.addWidget(QLabel("Threshold:"))
+        self._log_threshold = QDoubleSpinBox()
+        self._log_threshold.setRange(0.001, 1.0)
+        self._log_threshold.setSingleStep(0.01)
+        self._log_threshold.setDecimals(3)
+        self._log_threshold.setValue(0.09)
+        row_thresh.addWidget(self._log_threshold)
+        log_layout.addLayout(row_thresh)
+
+        self._log_group.setLayout(log_layout)
+        self._log_group.setVisible(False)
+        layout.addWidget(self._log_group)
 
         # Mask generation
         mask_group = QGroupBox("Mask Generation")
@@ -125,17 +198,6 @@ class DetectionWidget(QWidget):
 
         mask_group.setLayout(mask_layout)
         layout.addWidget(mask_group)
-
-        # Device
-        self._use_gpu = QCheckBox("Use GPU (CUDA)")
-        try:
-            import torch
-            self._use_gpu.setChecked(torch.cuda.is_available())
-            self._use_gpu.setEnabled(torch.cuda.is_available())
-        except ImportError:
-            self._use_gpu.setChecked(False)
-            self._use_gpu.setEnabled(False)
-        layout.addWidget(self._use_gpu)
 
         # Detect button
         self._detect_btn = QPushButton("Detect Spots")
@@ -184,6 +246,11 @@ class DetectionWidget(QWidget):
         if idx >= 0:
             self._points_combo.setCurrentIndex(idx)
 
+    def _on_method_changed(self, method: str):
+        is_spotiflow = method == "Spotiflow"
+        self._spotiflow_group.setVisible(is_spotiflow)
+        self._log_group.setVisible(not is_spotiflow)
+
     def _browse_custom_model(self):
         path = QFileDialog.getExistingDirectory(self, "Select custom model folder")
         if path:
@@ -207,33 +274,51 @@ class DetectionWidget(QWidget):
             )
             return
 
-        model_name = self._model_combo.currentText()
-        if model_name == "custom":
-            model_name = self._custom_model_path.text()
-            if not model_name or not Path(model_name).is_dir():
-                self._status_label.setText("Custom model path is invalid.")
-                return
+        method = self._method_combo.currentText().lower()
+        model = None
 
-        device = "cuda" if self._use_gpu.isChecked() else "cpu"
-        self._status_label.setText("Loading model...")
-        show_info("Loading model...")
         self._detect_btn.setEnabled(False)
         self._gen_mask_btn.setEnabled(False)
 
-        try:
-            model = load_model(model_name, device=device)
-        except Exception as e:
-            self._status_label.setText(f"Model load failed: {e}")
-            show_error(f"Model load failed: {e}")
-            self._detect_btn.setEnabled(True)
-            return
+        if method == "spotiflow":
+            model_name = self._model_combo.currentText()
+            if model_name == "custom":
+                model_name = self._custom_model_path.text()
+                if not model_name or not Path(model_name).is_dir():
+                    self._status_label.setText("Custom model path is invalid.")
+                    self._detect_btn.setEnabled(True)
+                    self._gen_mask_btn.setEnabled(True)
+                    return
+
+            device = "cuda" if self._use_gpu.isChecked() else "cpu"
+            self._status_label.setText("Loading model...")
+            show_info("Loading model...")
+
+            try:
+                model = load_model(model_name, device=device)
+            except Exception as e:
+                self._status_label.setText(f"Model load failed: {e}")
+                show_error(f"Model load failed: {e}")
+                self._detect_btn.setEnabled(True)
+                self._gen_mask_btn.setEnabled(True)
+                return
+        else:
+            self._status_label.setText("Detecting spots (LoG)...")
+            show_info("Detecting spots (LoG)...")
 
         self._worker = DetectionWorker(
             image=image,
             model=model,
+            method=method,
             prob_thresh=None if self._auto_prob_cb.isChecked() else self._prob_thresh.value(),
             min_distance=self._min_distance.value(),
             generate_mask=self._generate_mask_cb.isChecked(),
+            remove_bg=self._remove_bg_cb.isChecked(),
+            disk_size=self._disk_size.value(),
+            log_min_sigma=self._log_min_sigma.value(),
+            log_max_sigma=self._log_max_sigma.value(),
+            log_num_sigma=self._log_num_sigma.value(),
+            log_threshold=self._log_threshold.value(),
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_detection_finished)

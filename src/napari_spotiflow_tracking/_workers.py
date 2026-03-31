@@ -6,13 +6,18 @@ import numpy as np
 from qtpy.QtCore import QThread, Signal
 
 from napari_spotiflow_tracking._fitting import fit_and_mask_2d
-from napari_spotiflow_tracking._segmentation import detect_spots
+from napari_spotiflow_tracking._segmentation import (
+    detect_spots,
+    detect_spots_log,
+    remove_background,
+)
 
 
 class DetectionWorker(QThread):
     """Background worker for spot detection + Gaussian fitting.
 
     Handles both single 2D images and T,Y,X stacks.
+    Supports Spotiflow and LoG detection methods.
     """
 
     progress = Signal(str, int, int)  # (stage, current, total)
@@ -22,12 +27,19 @@ class DetectionWorker(QThread):
     def __init__(
         self,
         image: np.ndarray,
-        model,
-        prob_thresh: float | None,
-        min_distance: int,
+        model=None,
+        prob_thresh: float | None = None,
+        min_distance: int = 2,
         generate_mask: bool = True,
         patch_radius: int = 4,
         fallback_radius: float = 2.0,
+        method: str = "spotiflow",
+        remove_bg: bool = False,
+        disk_size: int = 10,
+        log_min_sigma: float = 2,
+        log_max_sigma: float = 10,
+        log_num_sigma: int = 10,
+        log_threshold: float = 0.09,
         parent=None,
     ):
         super().__init__(parent)
@@ -38,14 +50,34 @@ class DetectionWorker(QThread):
         self._generate_mask = generate_mask
         self._patch_radius = patch_radius
         self._fallback_radius = fallback_radius
+        self._method = method
+        self._remove_bg = remove_bg
+        self._disk_size = disk_size
+        self._log_min_sigma = log_min_sigma
+        self._log_max_sigma = log_max_sigma
+        self._log_num_sigma = log_num_sigma
+        self._log_threshold = log_threshold
 
     def _process_frame(self, frame_image: np.ndarray):
         """Detect spots and optionally fit Gaussians for a single 2D frame."""
-        points, details = detect_spots(
-            frame_image, self._model,
-            prob_thresh=self._prob_thresh,
-            min_distance=self._min_distance,
-        )
+        if self._remove_bg:
+            frame_image = remove_background(frame_image, disk_size=self._disk_size)
+
+        if self._method == "spotiflow":
+            points, _ = detect_spots(
+                frame_image, self._model,
+                prob_thresh=self._prob_thresh,
+                min_distance=self._min_distance,
+            )
+        else:
+            points = detect_spots_log(
+                frame_image,
+                min_sigma=self._log_min_sigma,
+                max_sigma=self._log_max_sigma,
+                num_sigma=self._log_num_sigma,
+                threshold=self._log_threshold,
+            )
+
         if self._generate_mask:
             result = fit_and_mask_2d(
                 frame_image, points,
