@@ -9,6 +9,7 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -21,6 +22,8 @@ from qtpy.QtWidgets import (
 from napari_spotiflow_tracking._preprocessing import (
     remove_background,
     remove_background_stack,
+    remove_background_erosion,
+    denoise_n2v,
     walking_average,
 )
 
@@ -63,19 +66,44 @@ class PreProcessingWidget(QWidget):
             self._use_gpu.setEnabled(False)
         layout.addWidget(self._use_gpu)
 
-        # Background removal
+        # ── Background Removal ────────────────────────────────────────
         bg_group = QGroupBox("Background Removal")
         bg_layout = QVBoxLayout()
 
-        row_sigma = QHBoxLayout()
-        row_sigma.addWidget(QLabel("Sigma:"))
+        # Method selector
+        method_row = QHBoxLayout()
+        method_row.addWidget(QLabel("Method:"))
+        self._bg_method = QComboBox()
+        self._bg_method.addItems(["High-pass (Gaussian)", "Erosion (Morphological)"])
+        self._bg_method.currentTextChanged.connect(self._on_bg_method_changed)
+        method_row.addWidget(self._bg_method)
+        bg_layout.addLayout(method_row)
+
+        # High-pass params
+        self._highpass_row = QHBoxLayout()
+        self._highpass_row_label = QLabel("Sigma:")
+        self._highpass_row.addWidget(self._highpass_row_label)
         self._bg_sigma = QDoubleSpinBox()
         self._bg_sigma.setRange(0.5, 200.0)
         self._bg_sigma.setSingleStep(1.0)
         self._bg_sigma.setValue(10.0)
         self._bg_sigma.setToolTip("Gaussian filter sigma — larger values remove broader background")
-        row_sigma.addWidget(self._bg_sigma)
-        bg_layout.addLayout(row_sigma)
+        self._highpass_row.addWidget(self._bg_sigma)
+        bg_layout.addLayout(self._highpass_row)
+
+        # Erosion params
+        self._erosion_row = QHBoxLayout()
+        self._erosion_row_label = QLabel("Disk size:")
+        self._erosion_row.addWidget(self._erosion_row_label)
+        self._disk_size = QSpinBox()
+        self._disk_size.setRange(1, 100)
+        self._disk_size.setValue(10)
+        self._disk_size.setToolTip("Radius of disk structuring element for erosion")
+        self._erosion_row.addWidget(self._disk_size)
+        bg_layout.addLayout(self._erosion_row)
+        # Hide erosion params by default
+        self._erosion_row_label.setVisible(False)
+        self._disk_size.setVisible(False)
 
         self._bg_btn = QPushButton("Remove Background")
         self._bg_btn.clicked.connect(self._run_remove_background)
@@ -84,7 +112,47 @@ class PreProcessingWidget(QWidget):
         bg_group.setLayout(bg_layout)
         layout.addWidget(bg_group)
 
-        # Walking average
+        # ── Noise2Void ────────────────────────────────────────────────
+        n2v_group = QGroupBox("Noise2Void Denoising")
+        n2v_layout = QVBoxLayout()
+
+        # Model path (optional)
+        model_row = QHBoxLayout()
+        self._n2v_model_path = QLabel("(train from scratch)")
+        self._n2v_model_path.setWordWrap(True)
+        model_row.addWidget(self._n2v_model_path)
+        browse_btn = QPushButton("Load model...")
+        browse_btn.clicked.connect(self._browse_n2v_model)
+        model_row.addWidget(browse_btn)
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFixedWidth(50)
+        clear_btn.clicked.connect(self._clear_n2v_model)
+        model_row.addWidget(clear_btn)
+        n2v_layout.addLayout(model_row)
+
+        # Training params
+        train_row = QHBoxLayout()
+        train_row.addWidget(QLabel("Epochs:"))
+        self._n2v_epochs = QSpinBox()
+        self._n2v_epochs.setRange(1, 1000)
+        self._n2v_epochs.setValue(100)
+        train_row.addWidget(self._n2v_epochs)
+        train_row.addWidget(QLabel("Patch size:"))
+        self._n2v_patch = QSpinBox()
+        self._n2v_patch.setRange(16, 512)
+        self._n2v_patch.setSingleStep(16)
+        self._n2v_patch.setValue(64)
+        train_row.addWidget(self._n2v_patch)
+        n2v_layout.addLayout(train_row)
+
+        self._n2v_btn = QPushButton("Denoise (N2V)")
+        self._n2v_btn.clicked.connect(self._run_n2v)
+        n2v_layout.addWidget(self._n2v_btn)
+
+        n2v_group.setLayout(n2v_layout)
+        layout.addWidget(n2v_group)
+
+        # ── Walking Average ───────────────────────────────────────────
         wa_group = QGroupBox("Walking Average")
         wa_layout = QVBoxLayout()
 
@@ -111,6 +179,8 @@ class PreProcessingWidget(QWidget):
         layout.addStretch()
         self._refresh_image_combo()
 
+    # ── Events ────────────────────────────────────────────────────────
+
     def _connect_events(self):
         self.viewer.layers.events.inserted.connect(self._on_layer_change)
         self.viewer.layers.events.removed.connect(self._on_layer_change)
@@ -128,6 +198,23 @@ class PreProcessingWidget(QWidget):
         if idx >= 0:
             self._image_combo.setCurrentIndex(idx)
 
+    def _on_bg_method_changed(self, method: str):
+        is_highpass = "High-pass" in method
+        self._highpass_row_label.setVisible(is_highpass)
+        self._bg_sigma.setVisible(is_highpass)
+        self._erosion_row_label.setVisible(not is_highpass)
+        self._disk_size.setVisible(not is_highpass)
+
+    def _browse_n2v_model(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select N2V model", "", "Model files (*.zip *.ckpt);;All files (*)"
+        )
+        if path:
+            self._n2v_model_path.setText(path)
+
+    def _clear_n2v_model(self):
+        self._n2v_model_path.setText("(train from scratch)")
+
     def _get_image(self):
         """Get the selected image layer data, or None with error shown."""
         layer_name = self._image_combo.currentText()
@@ -137,26 +224,88 @@ class PreProcessingWidget(QWidget):
         layer = self.viewer.layers[layer_name]
         return layer_name, np.asarray(layer.data)
 
+    # ── Background Removal ────────────────────────────────────────────
+
     def _run_remove_background(self):
         layer_name, image = self._get_image()
         if image is None:
             return
 
-        sigma = self._bg_sigma.value()
+        method = self._bg_method.currentText()
         device = "cuda" if self._use_gpu.isChecked() else "cpu"
-        show_info(f"Removing background (sigma={sigma}, device={device})...")
 
-        if image.ndim == 2:
-            result = remove_background(image, sigma=sigma, device=device)
-        elif image.ndim == 3:
-            result = remove_background_stack(image, sigma=sigma, device=device)
-        else:
+        if "High-pass" in method:
+            sigma = self._bg_sigma.value()
+            show_info(f"Removing background (high-pass, sigma={sigma})...")
+
+            if image.ndim == 2:
+                result = remove_background(image, sigma=sigma, device=device)
+            elif image.ndim == 3:
+                result = remove_background_stack(image, sigma=sigma, device=device)
+            else:
+                show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
+                return
+
+            suffix = f"hp s={sigma}"
+
+        else:  # Erosion
+            disk_size = self._disk_size.value()
+            show_info(f"Removing background (erosion, disk={disk_size})...")
+
+            if image.ndim == 2:
+                result = remove_background_erosion(image, disk_size=disk_size)
+            elif image.ndim == 3:
+                frames = []
+                for t in progress(range(image.shape[0]), desc="Removing background"):
+                    frames.append(remove_background_erosion(image[t], disk_size=disk_size))
+                result = np.stack(frames, axis=0)
+            else:
+                show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
+                return
+
+            suffix = f"erosion d={disk_size}"
+
+        self.viewer.add_image(result, name=f"{layer_name} ({suffix})")
+        show_info("Done — background removed.")
+        self._status_label.setText("Background removed.")
+
+    # ── Noise2Void ────────────────────────────────────────────────────
+
+    def _run_n2v(self):
+        layer_name, image = self._get_image()
+        if image is None:
+            return
+
+        if image.ndim not in (2, 3):
             show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
             return
 
-        self.viewer.add_image(result, name=f"{layer_name} (bg removed)")
-        show_info("Done — background removed.")
-        self._status_label.setText("Background removed.")
+        model_path = self._n2v_model_path.text()
+        if model_path == "(train from scratch)":
+            model_path = None
+            show_info(f"Training N2V model ({self._n2v_epochs.value()} epochs)...")
+        else:
+            show_info(f"Denoising with pretrained model: {model_path}")
+
+        try:
+            result = denoise_n2v(
+                image,
+                model_path=model_path,
+                n_epochs=self._n2v_epochs.value(),
+                patch_size=self._n2v_patch.value(),
+            )
+        except ImportError:
+            show_error("CAREamics not installed. Run: pip install careamics")
+            return
+        except Exception as e:
+            show_error(f"N2V failed: {e}")
+            return
+
+        self.viewer.add_image(result, name=f"{layer_name} (N2V denoised)")
+        show_info("Done — N2V denoising complete.")
+        self._status_label.setText("N2V denoising complete.")
+
+    # ── Walking Average ───────────────────────────────────────────────
 
     def _run_walking_average(self):
         layer_name, image = self._get_image()

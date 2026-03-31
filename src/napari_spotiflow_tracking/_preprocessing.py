@@ -145,6 +145,93 @@ def _remove_background_stack_torch(image_stack, sigma, device, torch, F):
     return result
 
 
+# ── Morphological erosion/reconstruction background removal ──────────
+
+
+def remove_background_erosion(
+    image: np.ndarray,
+    disk_size: int = 10,
+) -> np.ndarray:
+    """Remove background using morphological reconstruction.
+
+    Erodes the image with a disk structuring element, reconstructs by
+    dilation, and subtracts the reconstructed background from the original.
+
+    Args:
+        image: 2D image (Y, X).
+        disk_size: radius of the disk structuring element for erosion.
+
+    Returns:
+        Background-subtracted image (float64).
+    """
+    from skimage import morphology
+
+    seed = morphology.erosion(image, morphology.disk(disk_size))
+    background = morphology.reconstruction(seed, image, method="dilation")
+    return image.astype(np.float64) - background
+
+
+# ── Noise2Void denoising ─────────────────────────────────────────────
+
+
+def denoise_n2v(
+    image: np.ndarray,
+    model_path: str | None = None,
+    n_epochs: int = 100,
+    patch_size: int = 64,
+) -> np.ndarray:
+    """Denoise an image using Noise2Void (CAREamics).
+
+    If a model path is provided, loads a pretrained model.
+    Otherwise, trains a new N2V model on the input image (self-supervised).
+
+    Args:
+        image: 2D image (Y, X) or 3D stack (T, Y, X).
+        model_path: path to a pretrained CAREamics model (.zip or .ckpt).
+                    If None, trains a new model on the input data.
+        n_epochs: number of training epochs (only used when training).
+        patch_size: patch size for training/prediction.
+
+    Returns:
+        Denoised image with same shape as input.
+    """
+    from careamics import CAREamist
+    from careamics.config import create_n2v_configuration
+
+    if model_path is not None:
+        careamist = CAREamist(model_path)
+    else:
+        if image.ndim == 2:
+            axes = "YX"
+        elif image.ndim == 3:
+            axes = "SYX"
+        else:
+            raise ValueError(f"Expected 2D or 3D image, got {image.ndim}D")
+
+        config = create_n2v_configuration(
+            experiment_name="n2v_denoise",
+            data_type="array",
+            axes=axes,
+            patch_size=[patch_size, patch_size],
+            batch_size=1,
+            num_epochs=n_epochs,
+        )
+        careamist = CAREamist(config)
+        careamist.train(train_source=image.astype(np.float32))
+
+    prediction = careamist.predict(
+        source=image.astype(np.float32),
+        data_type="array",
+    )
+
+    if isinstance(prediction, list):
+        prediction = prediction[0]
+    return np.squeeze(np.asarray(prediction))
+
+
+# ── Walking average ──────────────────────────────────────────────────
+
+
 def walking_average(image_stack: np.ndarray, window: int = 3) -> np.ndarray:
     """Apply a walking (rolling) average along the time axis.
 
