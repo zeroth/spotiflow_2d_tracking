@@ -23,7 +23,7 @@ class DetectionWorker(QThread):
         self,
         image: np.ndarray,
         model,
-        prob_thresh: float,
+        prob_thresh: float | None,
         min_distance: int,
         generate_mask: bool = True,
         patch_radius: int = 4,

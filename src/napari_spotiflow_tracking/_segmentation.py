@@ -17,7 +17,7 @@ def load_model(model_name: str, device: str = "cpu"):
 def detect_spots(
     image_2d: np.ndarray,
     model: Spotiflow,
-    prob_thresh: float = 0.5,
+    prob_thresh: float | None = 0.5,
     min_distance: int = 2,
 ) -> tuple[np.ndarray, object]:
     """Detect spots in a single 2D image using a loaded Spotiflow model.

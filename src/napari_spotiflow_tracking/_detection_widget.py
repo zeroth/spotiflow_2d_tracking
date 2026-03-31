@@ -79,12 +79,18 @@ class DetectionWidget(QWidget):
         params_layout = QVBoxLayout()
 
         row_prob = QHBoxLayout()
+        self._auto_prob_cb = QCheckBox("Auto")
+        self._auto_prob_cb.setChecked(True)
+        self._auto_prob_cb.setToolTip("Let Spotiflow choose the probability threshold automatically")
+        self._auto_prob_cb.toggled.connect(lambda checked: self._prob_thresh.setEnabled(not checked))
         row_prob.addWidget(QLabel("Probability threshold:"))
         self._prob_thresh = QDoubleSpinBox()
         self._prob_thresh.setRange(0.0, 1.0)
         self._prob_thresh.setSingleStep(0.05)
         self._prob_thresh.setValue(0.5)
+        self._prob_thresh.setEnabled(False)
         row_prob.addWidget(self._prob_thresh)
+        row_prob.addWidget(self._auto_prob_cb)
         params_layout.addLayout(row_prob)
 
         row_dist = QHBoxLayout()
@@ -225,7 +231,7 @@ class DetectionWidget(QWidget):
         self._worker = DetectionWorker(
             image=image,
             model=model,
-            prob_thresh=self._prob_thresh.value(),
+            prob_thresh=None if self._auto_prob_cb.isChecked() else self._prob_thresh.value(),
             min_distance=self._min_distance.value(),
             generate_mask=self._generate_mask_cb.isChecked(),
         )
