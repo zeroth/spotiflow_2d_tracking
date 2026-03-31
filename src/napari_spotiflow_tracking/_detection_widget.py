@@ -103,7 +103,7 @@ class DetectionWidget(QWidget):
         mask_layout = QVBoxLayout()
 
         self._generate_mask_cb = QCheckBox("Generate mask during detection")
-        self._generate_mask_cb.setChecked(True)
+        self._generate_mask_cb.setChecked(False)
         mask_layout.addWidget(self._generate_mask_cb)
 
         # Generate mask from existing Points layer
