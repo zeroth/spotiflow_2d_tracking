@@ -6,6 +6,9 @@ from pathlib import Path
 import napari
 import napari.layers
 import numpy as np
+import pandas as pd
+from napari.utils.notifications import show_info, show_error
+from napari.utils import progress
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,6 +32,8 @@ class DetectionWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self._worker: DetectionWorker | None = None
+        self._last_points: np.ndarray | None = None
+        self._pbr = None  # napari progress bar
         self._setup_ui()
         self._connect_events()
 
@@ -93,6 +98,28 @@ class DetectionWidget(QWidget):
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
 
+        # Mask generation
+        mask_group = QGroupBox("Mask Generation")
+        mask_layout = QVBoxLayout()
+
+        self._generate_mask_cb = QCheckBox("Generate mask during detection")
+        self._generate_mask_cb.setChecked(True)
+        mask_layout.addWidget(self._generate_mask_cb)
+
+        # Generate mask from existing Points layer
+        mask_row = QHBoxLayout()
+        mask_row.addWidget(QLabel("Points layer:"))
+        self._points_combo = QComboBox()
+        mask_row.addWidget(self._points_combo)
+        mask_layout.addLayout(mask_row)
+
+        self._gen_mask_btn = QPushButton("Generate Mask from Points")
+        self._gen_mask_btn.clicked.connect(self._generate_mask_from_points)
+        mask_layout.addWidget(self._gen_mask_btn)
+
+        mask_group.setLayout(mask_layout)
+        layout.addWidget(mask_group)
+
         # Device
         self._use_gpu = QCheckBox("Use GPU (CUDA)")
         try:
@@ -109,12 +136,19 @@ class DetectionWidget(QWidget):
         self._detect_btn.clicked.connect(self._run_detection)
         layout.addWidget(self._detect_btn)
 
+        # Export button
+        self._export_btn = QPushButton("Export Blobs to CSV")
+        self._export_btn.clicked.connect(self._export_blobs)
+        self._export_btn.setEnabled(False)
+        layout.addWidget(self._export_btn)
+
         # Status
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
 
         layout.addStretch()
         self._refresh_image_combo()
+        self._refresh_points_combo()
 
     def _connect_events(self):
         self.viewer.layers.events.inserted.connect(self._on_layer_change)
@@ -122,6 +156,7 @@ class DetectionWidget(QWidget):
 
     def _on_layer_change(self, event=None):
         self._refresh_image_combo()
+        self._refresh_points_combo()
 
     def _refresh_image_combo(self):
         prev = self._image_combo.currentText()
@@ -132,6 +167,16 @@ class DetectionWidget(QWidget):
         idx = self._image_combo.findText(prev)
         if idx >= 0:
             self._image_combo.setCurrentIndex(idx)
+
+    def _refresh_points_combo(self):
+        prev = self._points_combo.currentText()
+        self._points_combo.clear()
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Points):
+                self._points_combo.addItem(layer.name)
+        idx = self._points_combo.findText(prev)
+        if idx >= 0:
+            self._points_combo.setCurrentIndex(idx)
 
     def _browse_custom_model(self):
         path = QFileDialog.getExistingDirectory(self, "Select custom model folder")
@@ -165,12 +210,15 @@ class DetectionWidget(QWidget):
 
         device = "cuda" if self._use_gpu.isChecked() else "cpu"
         self._status_label.setText("Loading model...")
+        show_info("Loading model...")
         self._detect_btn.setEnabled(False)
+        self._gen_mask_btn.setEnabled(False)
 
         try:
             model = load_model(model_name, device=device)
         except Exception as e:
             self._status_label.setText(f"Model load failed: {e}")
+            show_error(f"Model load failed: {e}")
             self._detect_btn.setEnabled(True)
             return
 
@@ -179,6 +227,7 @@ class DetectionWidget(QWidget):
             model=model,
             prob_thresh=self._prob_thresh.value(),
             min_distance=self._min_distance.value(),
+            generate_mask=self._generate_mask_cb.isChecked(),
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_detection_finished)
@@ -187,11 +236,24 @@ class DetectionWidget(QWidget):
 
     def _on_progress(self, stage: str, current: int, total: int):
         self._status_label.setText(f"{stage}: {current}/{total}")
+        if self._pbr is None and total > 1:
+            self._pbr = progress(total=total, desc=stage)
+        if self._pbr is not None:
+            self._pbr.set_description(stage)
+            self._pbr.n = current
+            self._pbr.refresh()
 
-    def _on_detection_finished(self, points: np.ndarray, masks: np.ndarray):
+    def _on_detection_finished(self, points: np.ndarray, masks):
+        if self._pbr is not None:
+            self._pbr.close()
+            self._pbr = None
         self._detect_btn.setEnabled(True)
+        self._gen_mask_btn.setEnabled(True)
+        self._last_points = points
+        self._export_btn.setEnabled(len(points) > 0)
         n_spots = len(points)
         self._status_label.setText(f"Detected {n_spots} spots.")
+        show_info(f"Done — detected {n_spots} spots.")
 
         if n_spots > 0:
             self.viewer.add_points(
@@ -200,8 +262,80 @@ class DetectionWidget(QWidget):
                 size=3,
                 face_color="red",
             )
-        self.viewer.add_labels(masks, name="Spot Masks", opacity=0.4)
+        if masks is not None:
+            self.viewer.add_labels(masks, name="Spot Masks", opacity=0.4)
+
+    def _generate_mask_from_points(self):
+        """Generate a mask from an existing Points layer using Gaussian fitting."""
+        points_name = self._points_combo.currentText()
+        if not points_name:
+            show_error("No Points layer selected.")
+            return
+
+        image_name = self._image_combo.currentText()
+        if not image_name:
+            show_error("No image selected (needed for Gaussian fitting).")
+            return
+
+        from napari_spotiflow_tracking._fitting import fit_and_mask_2d
+
+        points_layer = self.viewer.layers[points_name]
+        image_layer = self.viewer.layers[image_name]
+        points_data = np.asarray(points_layer.data)
+        image_data = np.asarray(image_layer.data)
+
+        if image_data.ndim == 2:
+            # Single frame — points are (N, 2)
+            pts = points_data[:, -2:] if points_data.shape[1] > 2 else points_data
+            result = fit_and_mask_2d(image_data, pts)
+            self.viewer.add_labels(result.mask, name="Spot Masks", opacity=0.4)
+            show_info(f"Generated mask from {len(pts)} spots.")
+
+        elif image_data.ndim == 3:
+            # Stack — points are (N, 3) as [frame, y, x]
+            if points_data.shape[1] != 3:
+                show_error("Points must have 3 columns (frame, y, x) for stacks.")
+                return
+
+            show_info("Generating masks...")
+            n_frames = image_data.shape[0]
+            all_masks = []
+            for t in progress(range(n_frames), desc="Generating masks"):
+                frame_pts = points_data[points_data[:, 0] == t][:, 1:]
+                result = fit_and_mask_2d(image_data[t], frame_pts)
+                all_masks.append(result.mask)
+
+            combined = np.stack(all_masks, axis=0)
+            self.viewer.add_labels(combined, name="Spot Masks", opacity=0.4)
+            show_info(f"Done — generated mask from {len(points_data)} spots across {n_frames} frames.")
+        else:
+            show_error(f"Unsupported image dimensions: {image_data.ndim}D")
+
+    def _export_blobs(self):
+        if self._last_points is None or len(self._last_points) == 0:
+            show_error("No blobs to export.")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save blobs CSV", "", "CSV files (*.csv)"
+        )
+        if not path:
+            return
+
+        if self._last_points.shape[1] == 3:
+            columns = ["frame", "y", "x"]
+        else:
+            columns = ["y", "x"]
+
+        df = pd.DataFrame(self._last_points, columns=columns)
+        df.to_csv(path, index=False)
+        show_info(f"Exported {len(df)} blobs to {path}")
 
     def _on_detection_error(self, msg: str):
+        if self._pbr is not None:
+            self._pbr.close()
+            self._pbr = None
         self._detect_btn.setEnabled(True)
+        self._gen_mask_btn.setEnabled(True)
         self._status_label.setText(f"Error: {msg[:200]}")
+        show_error(f"Detection failed: {msg[:200]}")

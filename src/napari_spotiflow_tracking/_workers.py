@@ -25,6 +25,7 @@ class DetectionWorker(QThread):
         model,
         prob_thresh: float,
         min_distance: int,
+        generate_mask: bool = True,
         patch_radius: int = 4,
         fallback_radius: float = 2.0,
         parent=None,
@@ -34,22 +35,25 @@ class DetectionWorker(QThread):
         self._model = model
         self._prob_thresh = prob_thresh
         self._min_distance = min_distance
+        self._generate_mask = generate_mask
         self._patch_radius = patch_radius
         self._fallback_radius = fallback_radius
 
     def _process_frame(self, frame_image: np.ndarray):
-        """Detect spots and fit Gaussians for a single 2D frame."""
+        """Detect spots and optionally fit Gaussians for a single 2D frame."""
         points, details = detect_spots(
             frame_image, self._model,
             prob_thresh=self._prob_thresh,
             min_distance=self._min_distance,
         )
-        result = fit_and_mask_2d(
-            frame_image, points,
-            patch_radius=self._patch_radius,
-            fallback_radius=self._fallback_radius,
-        )
-        return points, result.mask
+        if self._generate_mask:
+            result = fit_and_mask_2d(
+                frame_image, points,
+                patch_radius=self._patch_radius,
+                fallback_radius=self._fallback_radius,
+            )
+            return points, result.mask
+        return points, None
 
     def run(self):
         try:
@@ -73,13 +77,14 @@ class DetectionWorker(QThread):
                         points_with_frame = np.hstack([frame_col, points])
                         all_points.append(points_with_frame)
 
-                    all_masks.append(mask)
+                    if mask is not None:
+                        all_masks.append(mask)
 
                 if all_points:
                     combined_points = np.vstack(all_points)
                 else:
                     combined_points = np.empty((0, 3))
-                combined_masks = np.stack(all_masks, axis=0)
+                combined_masks = np.stack(all_masks, axis=0) if all_masks else None
 
                 self.finished.emit(combined_points, combined_masks)
             else:

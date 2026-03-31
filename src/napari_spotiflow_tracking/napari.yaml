@@ -1,5 +1,5 @@
 name: napari-spotiflow-tracking
-display_name: Spotiflow Tracking
+display_name: Spotiflow 2D Tracking
 contributions:
   commands:
     - id: napari-spotiflow-tracking.detection_widget

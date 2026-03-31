@@ -54,7 +54,7 @@ class TestDetectSpots:
 
 
 class TestLoadModel:
-    @patch("napari_spotiflow_tracking._segmentation.Spotiflow")
+    @patch("spotiflow.model.Spotiflow")
     def test_loads_pretrained_model(self, MockSpotiflow):
         from napari_spotiflow_tracking._segmentation import load_model
 
@@ -68,7 +68,7 @@ class TestLoadModel:
         )
         assert result is mock_model
 
-    @patch("napari_spotiflow_tracking._segmentation.Spotiflow")
+    @patch("spotiflow.model.Spotiflow")
     def test_loads_custom_model_from_path(self, MockSpotiflow):
         from napari_spotiflow_tracking._segmentation import load_model
 
