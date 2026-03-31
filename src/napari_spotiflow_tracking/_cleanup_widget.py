@@ -20,8 +20,8 @@ from qtpy.QtWidgets import (
 )
 
 from napari_spotiflow_tracking._preprocessing import (
-    remove_background,
-    remove_background_stack,
+    remove_background_high_pass,
+    remove_background_high_pass_stack,
     remove_background_erosion,
     denoise_n2v,
     walking_average,
@@ -239,9 +239,9 @@ class PreProcessingWidget(QWidget):
             show_info(f"Removing background (high-pass, sigma={sigma})...")
 
             if image.ndim == 2:
-                result = remove_background(image, sigma=sigma, device=device)
+                result = remove_background_high_pass(image, sigma=sigma, device=device)
             elif image.ndim == 3:
-                result = remove_background_stack(image, sigma=sigma, device=device)
+                result = remove_background_high_pass_stack(image, sigma=sigma, device=device)
             else:
                 show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
                 return

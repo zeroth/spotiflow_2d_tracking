@@ -15,7 +15,7 @@ def _get_device(use_gpu: bool = False) -> str:
     return "cpu"
 
 
-def remove_background(
+def remove_background_high_pass(
     image: np.ndarray,
     sigma: float = 10.0,
     device: str = "cpu",
@@ -75,7 +75,7 @@ def _remove_background_torch(image, sigma, device, torch, F):
     return result.squeeze().cpu().numpy().astype(np.float64)
 
 
-def remove_background_stack(
+def remove_background_high_pass_stack(
     image_stack: np.ndarray,
     sigma: float = 10.0,
     device: str = "cpu",
