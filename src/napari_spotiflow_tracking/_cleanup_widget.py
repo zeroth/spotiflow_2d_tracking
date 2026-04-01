@@ -337,10 +337,12 @@ class PreProcessingWidget(QWidget):
 
     def _cancel_n2v(self):
         if self._n2v_worker is not None and self._n2v_worker.isRunning():
-            self._n2v_worker.requestInterruption()
-            self._n2v_worker.terminate()
-            self._n2v_worker.wait(3000)
-            self._n2v_worker = None
+            self._n2v_worker.progress.disconnect(self._on_n2v_progress)
+            self._n2v_worker.finished.disconnect(self._on_n2v_finished)
+            self._n2v_worker.errored.disconnect(self._on_n2v_error)
+            self._n2v_worker.cancel()
+            self._n2v_worker.wait(5000)
+        self._n2v_worker = None
         if self._pbr is not None:
             self._pbr.close()
             self._pbr = None

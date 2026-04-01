@@ -6,7 +6,7 @@ import numpy as np
 from qtpy.QtCore import QThread, Signal
 
 from napari_spotiflow_tracking._fitting import fit_and_mask_2d
-from napari_spotiflow_tracking._preprocessing import remove_background_high_pass, denoise_n2v
+from napari_spotiflow_tracking._preprocessing import remove_background_high_pass
 from napari_spotiflow_tracking._segmentation import detect_spots, detect_spots_log
 
 
@@ -127,8 +127,25 @@ class DetectionWorker(QThread):
             self.errored.emit(traceback.format_exc())
 
 
+def _n2v_subprocess(image, model_path, n_epochs, patch_size, result_queue):
+    """Run N2V in a separate process (cleanly killable)."""
+    try:
+        from napari_spotiflow_tracking._preprocessing import denoise_n2v
+        result = denoise_n2v(image, model_path=model_path,
+                             n_epochs=n_epochs, patch_size=patch_size)
+        result_queue.put(("ok", result))
+    except ImportError:
+        result_queue.put(("import_error", "CAREamics not installed. Run: pip install careamics"))
+    except Exception:
+        result_queue.put(("error", traceback.format_exc()))
+
+
 class N2VWorker(QThread):
-    """Background worker for Noise2Void denoising."""
+    """Background worker for Noise2Void denoising.
+
+    Runs N2V in a child process so it can be cleanly cancelled without
+    corrupting PyTorch/Lightning state.
+    """
 
     progress = Signal(str)  # status message
     finished = Signal(object)  # denoised image
@@ -147,25 +164,47 @@ class N2VWorker(QThread):
         self._model_path = model_path
         self._n_epochs = n_epochs
         self._patch_size = patch_size
+        self._process = None
 
     def run(self):
-        try:
-            if self._model_path is None:
-                self.progress.emit(f"Training N2V model ({self._n_epochs} epochs)...")
-            else:
-                self.progress.emit("Denoising with pretrained model...")
+        import multiprocessing as mp
 
-            result = denoise_n2v(
-                self._image,
-                model_path=self._model_path,
-                n_epochs=self._n_epochs,
-                patch_size=self._patch_size,
-            )
-            self.finished.emit(result)
-        except ImportError:
-            self.errored.emit("CAREamics not installed. Run: pip install careamics")
-        except Exception:
-            self.errored.emit(traceback.format_exc())
+        if self._model_path is None:
+            self.progress.emit(f"Training N2V model ({self._n_epochs} epochs)...")
+        else:
+            self.progress.emit("Denoising with pretrained model...")
+
+        ctx = mp.get_context("spawn")
+        result_queue = ctx.Queue()
+        self._process = ctx.Process(
+            target=_n2v_subprocess,
+            args=(self._image, self._model_path, self._n_epochs,
+                  self._patch_size, result_queue),
+        )
+        self._process.start()
+        self._process.join()
+
+        if self._process.exitcode != 0 and result_queue.empty():
+            self.errored.emit("N2V process was cancelled or crashed.")
+            return
+
+        if result_queue.empty():
+            self.errored.emit("N2V process returned no result.")
+            return
+
+        status, payload = result_queue.get()
+        if status == "ok":
+            self.finished.emit(payload)
+        elif status == "import_error":
+            self.errored.emit(payload)
+        else:
+            self.errored.emit(payload)
+
+    def cancel(self):
+        """Kill the child process cleanly."""
+        if self._process is not None and self._process.is_alive():
+            self._process.kill()
+            self._process.join(timeout=3)
 
 
 class MaskGenerationWorker(QThread):
