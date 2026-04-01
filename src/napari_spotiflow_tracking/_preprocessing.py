@@ -221,10 +221,16 @@ def denoise_n2v(
         careamist = CAREamist(config)
         careamist.train(train_source=image.astype(np.float32))
 
+    # Use tiling to handle images whose dimensions aren't divisible by 2^depth
+    tile_size = (patch_size, patch_size)
+    tile_overlap = (patch_size // 4, patch_size // 4)
+
     pred_kwargs = dict(
         source=image.astype(np.float32),
         data_type="array",
         dataloader_params={"num_workers": 0},
+        tile_size=tile_size,
+        tile_overlap=tile_overlap,
     )
     if image.ndim == 2:
         pred_kwargs["axes"] = "YX"
