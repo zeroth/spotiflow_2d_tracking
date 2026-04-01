@@ -15,13 +15,8 @@ def _available_backends() -> list[str]:
     """Return list of available fitting backends, best first."""
     backends = ["scipy"]
     try:
-        import jaxfit  # noqa: F401
-        backends.insert(0, "jaxfit")
-    except ImportError:
-        pass
-    try:
-        import pygpufit.gpufit as gf  # noqa: F401
-        backends.insert(0, "gpufit")
+        import torchimize  # noqa: F401
+        backends.insert(0, "torchimize")
     except ImportError:
         pass
     return backends
@@ -89,7 +84,7 @@ class FitAndMaskResult:
 
 
 def _gaussian_2d(yx, y0, x0, sigma_y, sigma_x, A, B):
-    """2D Gaussian model function for curve_fit / jaxfit."""
+    """2D Gaussian model function for curve_fit."""
     y, x = yx
     return A * np.exp(
         -((y - y0) ** 2 / (2 * sigma_y ** 2) + (x - x0) ** 2 / (2 * sigma_x ** 2))
@@ -167,118 +162,126 @@ def _fit_single_spot_scipy_args(args):
     return _fit_single_spot_scipy(*args)
 
 
-# ── JAXFit backend (GPU via JAX) ────────────────────────────────────
+# ── Torchimize backend (GPU batched LM) ─────────────────────────────
 
 
-def _fit_single_spot_jaxfit(image, center_yx, patch_radius):
-    """Fit a single spot using JAXFit (GPU-accelerated drop-in for curve_fit)."""
-    from jaxfit import CurveFit
+def _fit_spots_torchimize(image, points, patch_radius):
+    """Fit all spots in one batched GPU call using torchimize.
 
-    extracted = _extract_patch(image, center_yx, patch_radius)
-    if extracted is None:
-        return SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)
-
-    patch_norm, local_y, local_x, p_min, p_max = extracted
-    cf = CurveFit()
-
-    try:
-        popt, _ = cf.curve_fit(
-            _gaussian_2d,
-            (local_y.ravel(), local_x.ravel()),
-            patch_norm.ravel(),
-            p0=(0, 0, 1.5, 1.5, 1.0, 0.0),
-            bounds=(
-                [-1, -1, 0.3, 0.3, 0, -0.5],
-                [1, 1, patch_radius, patch_radius, 2.0, 1.0],
-            ),
-        )
-        y0, x0, sigma_y, sigma_x, A_norm, B_norm = popt
-        intensity_range = p_max - p_min
-        return SpotFit2D(
-            float(y0), float(x0), float(sigma_y), float(sigma_x),
-            float(A_norm) * intensity_range,
-            float(B_norm) * intensity_range + p_min,
-            success=True,
-        )
-    except Exception:
-        return SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)
-
-
-# ── Gpufit backend (CUDA, batched) ──────────────────────────────────
-
-
-def _fit_spots_gpufit(image, points, patch_radius):
-    """Fit all spots in one batched GPU call using Gpufit.
-
-    Gpufit's strength is fitting many curves in parallel on the GPU.
+    Uses lsq_lma_parallel to fit all spots simultaneously on GPU/CPU.
     Returns a list of SpotFit2D results.
     """
-    import pygpufit.gpufit as gf
+    import torch
+    from torchimize.functions import lsq_lma_parallel
 
-    n_spots = len(points)
-    fits = []
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Pre-extract all patches
-    patches = []
-    coords = []
-    valid_indices = []
-    for i, (py, px) in enumerate(points):
-        extracted = _extract_patch(image, (py, px), patch_radius)
-        if extracted is None:
-            fits.append((i, SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)))
-        else:
-            patches.append(extracted)
-            coords.append((py, px))
-            valid_indices.append(i)
+    # Extract all patches
+    extractions = []
+    for py, px in points:
+        extractions.append(_extract_patch(image, (py, px), patch_radius))
 
-    if not patches:
-        return [f for _, f in sorted(fits)]
+    # Separate valid from invalid
+    valid_indices = [i for i, e in enumerate(extractions) if e is not None]
+    if not valid_indices:
+        return [SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)] * len(points)
 
-    # Gpufit expects uniform patch sizes — use the patch_radius grid
+    # Build uniform-sized coordinate grids and data arrays
     patch_size = 2 * patch_radius + 1
-    n_valid = len(patches)
+    n_valid = len(valid_indices)
+    n_pixels = patch_size * patch_size
 
-    # Build data array (n_valid, patch_size^2) — flatten each patch
-    data = np.zeros((n_valid, patch_size * patch_size), dtype=np.float32)
-    initial_params = np.zeros((n_valid, 6), dtype=np.float32)
-    p_ranges = []
+    # Pre-allocate tensors
+    data_tensor = torch.zeros(n_valid, n_pixels, dtype=torch.float32, device=device)
+    y_tensor = torch.zeros(n_valid, n_pixels, dtype=torch.float32, device=device)
+    x_tensor = torch.zeros(n_valid, n_pixels, dtype=torch.float32, device=device)
+    p_mins = np.zeros(n_valid)
+    p_maxs = np.zeros(n_valid)
 
-    for j, (patch_norm, local_y, local_x, p_min, p_max) in enumerate(patches):
-        # Gpufit needs uniform-sized data — pad/crop to patch_size x patch_size
-        ph, pw = patch_norm.shape
-        if ph == patch_size and pw == patch_size:
-            data[j] = patch_norm.ravel().astype(np.float32)
-        else:
-            # Edge spot — fall back to scipy for this one
-            fit = _fit_single_spot_scipy(image, coords[j], patch_radius)
-            fits.append((valid_indices[j], fit))
-            continue
+    # Track which valid spots have full-size patches
+    batch_indices = []  # indices into valid_indices that go into GPU batch
 
-        initial_params[j] = [0, 0, 1.5, 1.5, 1.0, 0.0]
-        p_ranges.append((p_min, p_max))
+    for j, vi in enumerate(valid_indices):
+        patch_norm, local_y, local_x, p_min, p_max = extractions[vi]
+        if patch_norm.shape == (patch_size, patch_size):
+            data_tensor[j] = torch.from_numpy(patch_norm.ravel().astype(np.float32))
+            y_tensor[j] = torch.from_numpy(local_y.ravel().astype(np.float32))
+            x_tensor[j] = torch.from_numpy(local_x.ravel().astype(np.float32))
+            p_mins[j] = p_min
+            p_maxs[j] = p_max
+            batch_indices.append(j)
 
-    # Use Gpufit with 2D Gaussian model
-    # Gpufit model ID 1 = GAUSS_2D (but it has different parameterization)
-    # Fall back to per-spot scipy if gpufit model doesn't match our parameterization
-    for j, (patch_norm, local_y, local_x, p_min, p_max) in enumerate(patches):
-        if any(valid_indices[j] == idx for idx, _ in fits):
-            continue  # already handled as edge case
-        fit = _fit_single_spot_scipy(image, coords[j], patch_radius)
-        fits.append((valid_indices[j], fit))
+    if not batch_indices:
+        # All valid spots are edge cases — fall back to scipy
+        fits = [SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)] * len(points)
+        for vi in valid_indices:
+            fits[vi] = _fit_single_spot_scipy(image, points[vi], patch_radius)
+        return fits
 
-    # Sort by original index
-    fits.sort(key=lambda x: x[0])
-    return [f for _, f in fits]
+    n_batch = len(batch_indices)
+    batch_data = data_tensor[batch_indices]
+    batch_y = y_tensor[batch_indices]
+    batch_x = x_tensor[batch_indices]
 
+    # Initial parameters: [y0, x0, sigma_y, sigma_x, A, B]
+    p_init = torch.tensor(
+        [[0, 0, 1.5, 1.5, 1.0, 0.0]] * n_batch,
+        dtype=torch.float32, device=device,
+    )
 
-# ── Backend dispatcher ───────────────────────────────────────────────
+    # Residual function for batched LM
+    def residuals(p):
+        # p: [batch, 6]
+        y0 = p[:, 0:1]       # [batch, 1]
+        x0 = p[:, 1:2]
+        sy = p[:, 2:3].clamp(min=0.3)
+        sx = p[:, 3:4].clamp(min=0.3)
+        A = p[:, 4:5].clamp(min=0)
+        B = p[:, 5:6]
 
+        dy = batch_y - y0
+        dx = batch_x - x0
+        model = A * torch.exp(
+            -(dy ** 2 / (2 * sy ** 2) + dx ** 2 / (2 * sx ** 2))
+        ) + B
+        res = (model - batch_data).unsqueeze(-1)  # [batch, pixels, 1]
+        return res
 
-def _get_fit_func(backend: str):
-    """Return the single-spot fitting function for the given backend."""
-    if backend == "jaxfit":
-        return _fit_single_spot_jaxfit
-    return _fit_single_spot_scipy
+    try:
+        result_list = lsq_lma_parallel(p_init, residuals, max_iter=100)
+        final_params = result_list[-1].cpu().numpy()  # [n_batch, 6]
+    except Exception:
+        # Fall back to scipy for all
+        fits = [SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)] * len(points)
+        for vi in valid_indices:
+            fits[vi] = _fit_single_spot_scipy(image, points[vi], patch_radius)
+        return fits
+
+    # Build results
+    fits = [SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)] * len(points)
+
+    for k, bi in enumerate(batch_indices):
+        vi = valid_indices[bi]
+        y0, x0, sigma_y, sigma_x, A_norm, B_norm = final_params[k]
+        sigma_y = max(abs(sigma_y), 0.3)
+        sigma_x = max(abs(sigma_x), 0.3)
+        intensity_range = p_maxs[bi] - p_mins[bi]
+
+        fits[vi] = SpotFit2D(
+            float(y0), float(x0),
+            float(sigma_y), float(sigma_x),
+            float(A_norm * intensity_range),
+            float(B_norm * intensity_range + p_mins[bi]),
+            success=True,
+        )
+
+    # Handle edge spots (non-full-size patches) with scipy fallback
+    handled = set(valid_indices[bi] for bi in batch_indices)
+    for vi in valid_indices:
+        if vi not in handled:
+            fits[vi] = _fit_single_spot_scipy(image, points[vi], patch_radius)
+
+    return fits
 
 
 # ── Mask painting ────────────────────────────────────────────────────
@@ -314,9 +317,6 @@ def fit_and_mask_2d(
 ) -> FitAndMaskResult:
     """Fit 2D Gaussians to detected spots and paint labeled masks.
 
-    Fitting is parallelized across CPU cores (scipy) or runs on GPU
-    (jaxfit/gpufit) depending on available backend.
-
     Args:
         image: 2D image (Y, X).
         points: (N, 2) array of [y, x] spot coordinates.
@@ -324,7 +324,7 @@ def fit_and_mask_2d(
         fallback_radius: radius for circular mask when fitting fails.
         progress_callback: optional callable(current, total) for progress updates.
         max_workers: number of parallel workers for CPU fitting. None = cpu_count.
-        backend: fitting backend — 'gpufit', 'jaxfit', or 'scipy'.
+        backend: fitting backend — 'torchimize' or 'scipy'.
                  None = auto-detect best available.
 
     Returns:
@@ -339,15 +339,12 @@ def fit_and_mask_2d(
         backend = get_best_backend()
 
     n_spots = len(points)
-    fit_func = _get_fit_func(backend)
 
-    # JAXFit runs on GPU — no need for multiprocessing
-    if backend == "jaxfit":
-        fits = []
-        for i, (py, px) in enumerate(points):
-            fits.append(fit_func(image, (py, px), patch_radius))
-            if progress_callback is not None:
-                progress_callback(i + 1, n_spots)
+    # Torchimize — batched GPU fitting
+    if backend == "torchimize":
+        fits = _fit_spots_torchimize(image, points, patch_radius)
+        if progress_callback is not None:
+            progress_callback(n_spots, n_spots)
 
     # Scipy — parallel via ProcessPoolExecutor
     elif n_spots > 10 and max_workers != 1:
@@ -361,7 +358,7 @@ def fit_and_mask_2d(
     else:
         fits = []
         for i, (py, px) in enumerate(points):
-            fits.append(fit_func(image, (py, px), patch_radius))
+            fits.append(_fit_single_spot_scipy(image, (py, px), patch_radius))
             if progress_callback is not None:
                 progress_callback(i + 1, n_spots)
 
