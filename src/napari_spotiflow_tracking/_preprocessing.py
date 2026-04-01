@@ -224,6 +224,7 @@ def denoise_n2v(
     prediction = careamist.predict(
         source=image.astype(np.float32),
         data_type="array",
+        dataloader_params={"num_workers": 0},
     )
 
 
