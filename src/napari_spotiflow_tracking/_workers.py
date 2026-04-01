@@ -127,20 +127,23 @@ class DetectionWorker(QThread):
             self.errored.emit(traceback.format_exc())
 
 
-def _n2v_subprocess(image, model_path, n_epochs, patch_size, result_queue):
-    """Run N2V in a separate process (cleanly killable)."""
+def _n2v_subprocess(image, model_path, n_epochs, patch_size, result_file, error_queue):
+    """Run N2V in a separate process (cleanly killable).
+
+    Writes result to a .npy temp file to avoid Queue size limits.
+    """
     try:
         from napari_spotiflow_tracking._preprocessing import denoise_n2v
         result = denoise_n2v(image, model_path=model_path,
                              n_epochs=n_epochs, patch_size=patch_size)
-        result_queue.put(("ok", result))
+        np.save(result_file, result)
+        error_queue.put(("ok", None))
     except ImportError:
-        result_queue.put(("import_error", "CAREamics not installed. Run: pip install careamics"))
+        error_queue.put(("import_error", "CAREamics not installed. Run: pip install careamics"))
     except Exception as e:
-        # Capture full traceback as string to avoid truncation in queue
         tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-        print(tb, flush=True)  # also print to console for debugging
-        result_queue.put(("error", tb))
+        print(tb, flush=True)
+        error_queue.put(("error", tb))
 
 
 class N2VWorker(QThread):
@@ -171,37 +174,58 @@ class N2VWorker(QThread):
 
     def run(self):
         import multiprocessing as mp
+        import tempfile
 
         if self._model_path is None:
             self.progress.emit(f"Training N2V model ({self._n_epochs} epochs)...")
         else:
             self.progress.emit("Denoising with pretrained model...")
 
+        # Use temp file for result transfer (avoids Queue size limits)
+        tmp = tempfile.NamedTemporaryFile(suffix=".npy", delete=False)
+        result_file = tmp.name
+        tmp.close()
+
         ctx = mp.get_context("spawn")
-        result_queue = ctx.Queue()
+        error_queue = ctx.Queue()
         self._process = ctx.Process(
             target=_n2v_subprocess,
             args=(self._image, self._model_path, self._n_epochs,
-                  self._patch_size, result_queue),
+                  self._patch_size, result_file, error_queue),
         )
         self._process.start()
         self._process.join()
 
-        if self._process.exitcode != 0 and result_queue.empty():
+        if self._process.exitcode != 0 and error_queue.empty():
+            self._cleanup_tmp(result_file)
             self.errored.emit("N2V process was cancelled or crashed.")
             return
 
-        if result_queue.empty():
-            self.errored.emit("N2V process returned no result.")
+        if error_queue.empty():
+            self._cleanup_tmp(result_file)
+            self.errored.emit("N2V process returned no status.")
             return
 
-        status, payload = result_queue.get()
+        status, payload = error_queue.get()
         if status == "ok":
-            self.finished.emit(payload)
-        elif status == "import_error":
-            self.errored.emit(payload)
+            try:
+                result = np.load(result_file)
+                self.finished.emit(result)
+            except Exception as e:
+                self.errored.emit(f"Failed to load result: {e}")
+            finally:
+                self._cleanup_tmp(result_file)
         else:
+            self._cleanup_tmp(result_file)
             self.errored.emit(payload)
+
+    @staticmethod
+    def _cleanup_tmp(path):
+        import os
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
     def cancel(self):
         """Kill the child process cleanly."""
