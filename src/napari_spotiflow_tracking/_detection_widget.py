@@ -258,11 +258,17 @@ class DetectionWidget(QWidget):
         filter_group.setLayout(filter_layout)
         layout.addWidget(filter_group)
 
-        # Detect button + cancel
+        # Detect button + quick preview + cancel
         detect_row = QHBoxLayout()
         self._detect_btn = QPushButton("Detect Spots")
         self._detect_btn.clicked.connect(self._run_detection)
         detect_row.addWidget(self._detect_btn)
+        self._preview_btn = QPushButton("Quick Preview")
+        self._preview_btn.setToolTip(
+            "Run detection on the current time point only"
+        )
+        self._preview_btn.clicked.connect(self._run_preview)
+        detect_row.addWidget(self._preview_btn)
         self._cancel_detect_btn = QPushButton("Cancel")
         self._cancel_detect_btn.clicked.connect(self._cancel_detection)
         self._cancel_detect_btn.setEnabled(False)
@@ -335,6 +341,83 @@ class DetectionWidget(QWidget):
             if self._model_combo.findText("custom") < 0:
                 self._model_combo.addItem("custom")
             self._model_combo.setCurrentText("custom")
+
+    def _run_preview(self):
+        """Run detection on the current time point only for quick parameter testing."""
+        layer_name = self._image_combo.currentText()
+        if not layer_name:
+            self._status_label.setText("No image selected.")
+            return
+
+        layer = self.viewer.layers[layer_name]
+        image = np.asarray(layer.data)
+
+        if image.ndim == 2:
+            frame_image = image
+            frame_idx = None
+        elif image.ndim == 3:
+            frame_idx = int(self.viewer.dims.current_step[0])
+            frame_image = image[frame_idx]
+        else:
+            self._status_label.setText(
+                f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D."
+            )
+            return
+
+        method = self._method_combo.currentText().lower()
+        model = None
+
+        self._detect_btn.setEnabled(False)
+        self._preview_btn.setEnabled(False)
+        self._gen_mask_btn.setEnabled(False)
+
+        if method == "spotiflow":
+            model_name = self._model_combo.currentText()
+            if model_name == "custom":
+                model_name = self._custom_model_path.text()
+                if not model_name or not Path(model_name).is_dir():
+                    self._status_label.setText("Custom model path is invalid.")
+                    self._detect_btn.setEnabled(True)
+                    self._preview_btn.setEnabled(True)
+                    self._gen_mask_btn.setEnabled(True)
+                    return
+
+            device = "cuda" if self._use_gpu.isChecked() else "cpu"
+            self._status_label.setText("Loading model...")
+            show_info("Loading model for preview...")
+
+            try:
+                model = load_model(model_name, device=device)
+            except Exception as e:
+                self._status_label.setText(f"Model load failed: {e}")
+                show_error(f"Model load failed: {e}")
+                self._detect_btn.setEnabled(True)
+                self._preview_btn.setEnabled(True)
+                self._gen_mask_btn.setEnabled(True)
+                return
+        else:
+            suffix = f" (frame {frame_idx})" if frame_idx is not None else ""
+            show_info(f"Preview: detecting spots (LoG){suffix}...")
+
+        # Run on single 2D frame
+        self._worker = DetectionWorker(
+            image=frame_image,
+            model=model,
+            method=method,
+            prob_thresh=None if self._auto_prob_cb.isChecked() else self._prob_thresh.value(),
+            min_distance=self._min_distance.value(),
+            generate_mask=self._generate_mask_cb.isChecked(),
+            fit_backend=self._backend_combo.currentText(),
+            log_min_sigma=self._log_min_sigma.value(),
+            log_max_sigma=self._log_max_sigma.value(),
+            log_num_sigma=self._log_num_sigma.value(),
+            log_threshold=self._log_threshold.value(),
+        )
+        self._cancel_detect_btn.setEnabled(True)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_detection_finished)
+        self._worker.errored.connect(self._on_detection_error)
+        self._worker.start()
 
     def _run_detection(self):
         layer_name = self._image_combo.currentText()
@@ -416,6 +499,7 @@ class DetectionWidget(QWidget):
             self._pbr.close()
             self._pbr = None
         self._detect_btn.setEnabled(True)
+        self._preview_btn.setEnabled(True)
         self._gen_mask_btn.setEnabled(True)
         self._cancel_detect_btn.setEnabled(False)
         self._last_points = points
@@ -653,6 +737,7 @@ class DetectionWidget(QWidget):
             self._pbr.close()
             self._pbr = None
         self._detect_btn.setEnabled(True)
+        self._preview_btn.setEnabled(True)
         self._gen_mask_btn.setEnabled(True)
         self._cancel_detect_btn.setEnabled(False)
         self._status_label.setText(f"Error: {msg[:200]}")
@@ -679,6 +764,7 @@ class DetectionWidget(QWidget):
             self._pbr.close()
             self._pbr = None
         self._detect_btn.setEnabled(True)
+        self._preview_btn.setEnabled(True)
         self._gen_mask_btn.setEnabled(True)
         self._cancel_detect_btn.setEnabled(False)
         show_info("Cancelled.")
