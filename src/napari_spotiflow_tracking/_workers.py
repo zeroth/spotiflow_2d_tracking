@@ -28,6 +28,7 @@ class DetectionWorker(QThread):
         prob_thresh: float | None = None,
         min_distance: int = 2,
         generate_mask: bool = True,
+        fit_backend: str | None = None,
         patch_radius: int = 4,
         fallback_radius: float = 2.0,
         method: str = "spotiflow",
@@ -45,6 +46,7 @@ class DetectionWorker(QThread):
         self._prob_thresh = prob_thresh
         self._min_distance = min_distance
         self._generate_mask = generate_mask
+        self._fit_backend = fit_backend
         self._patch_radius = patch_radius
         self._fallback_radius = fallback_radius
         self._method = method
@@ -80,6 +82,7 @@ class DetectionWorker(QThread):
                 frame_image, points,
                 patch_radius=self._patch_radius,
                 fallback_radius=self._fallback_radius,
+                backend=self._fit_backend,
             )
             return points, result.mask
         return points, None
@@ -182,6 +185,7 @@ class MaskGenerationWorker(QThread):
         points: np.ndarray,
         patch_radius: int = 4,
         fallback_radius: float = 2.0,
+        fit_backend: str | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -189,6 +193,7 @@ class MaskGenerationWorker(QThread):
         self._points = points
         self._patch_radius = patch_radius
         self._fallback_radius = fallback_radius
+        self._fit_backend = fit_backend
 
     def run(self):
         try:
@@ -199,6 +204,7 @@ class MaskGenerationWorker(QThread):
                     self._image, pts,
                     patch_radius=self._patch_radius,
                     fallback_radius=self._fallback_radius,
+                    backend=self._fit_backend,
                 )
                 self.progress.emit("Fitting spots", 1, 1)
                 self.finished.emit(result.mask)
@@ -218,6 +224,7 @@ class MaskGenerationWorker(QThread):
                         self._image[t], frame_pts,
                         patch_radius=self._patch_radius,
                         fallback_radius=self._fallback_radius,
+                        backend=self._fit_backend,
                     )
                     all_masks.append(result.mask)
 

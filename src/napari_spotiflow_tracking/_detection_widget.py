@@ -172,6 +172,18 @@ class DetectionWidget(QWidget):
         self._generate_mask_cb.setChecked(False)
         mask_layout.addWidget(self._generate_mask_cb)
 
+        # Fitting backend
+        from napari_spotiflow_tracking._fitting import _available_backends
+        backend_row = QHBoxLayout()
+        backend_row.addWidget(QLabel("Fitting backend:"))
+        self._backend_combo = QComboBox()
+        self._backend_combo.addItems(_available_backends())
+        self._backend_combo.setToolTip(
+            "scipy: CPU parallel | jaxfit: GPU via JAX | gpufit: CUDA batched"
+        )
+        backend_row.addWidget(self._backend_combo)
+        mask_layout.addLayout(backend_row)
+
         # Generate mask from existing Points layer
         mask_row = QHBoxLayout()
         mask_row.addWidget(QLabel("Points layer:"))
@@ -300,6 +312,7 @@ class DetectionWidget(QWidget):
             prob_thresh=None if self._auto_prob_cb.isChecked() else self._prob_thresh.value(),
             min_distance=self._min_distance.value(),
             generate_mask=self._generate_mask_cb.isChecked(),
+            fit_backend=self._backend_combo.currentText(),
             log_min_sigma=self._log_min_sigma.value(),
             log_max_sigma=self._log_max_sigma.value(),
             log_num_sigma=self._log_num_sigma.value(),
@@ -365,6 +378,7 @@ class DetectionWidget(QWidget):
         self._mask_worker = MaskGenerationWorker(
             image=image_data,
             points=points_data,
+            fit_backend=self._backend_combo.currentText(),
         )
         self._mask_worker.progress.connect(self._on_mask_progress)
         self._mask_worker.finished.connect(self._on_mask_finished)
