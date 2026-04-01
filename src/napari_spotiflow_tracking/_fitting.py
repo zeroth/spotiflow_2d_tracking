@@ -16,7 +16,7 @@ def _available_backends() -> list[str]:
     backends = ["scipy"]
     try:
         import torchimize  # noqa: F401
-        backends.insert(0, "torchimize")
+        backends.append("torchimize")
     except ImportError:
         pass
     return backends
@@ -165,74 +165,89 @@ def _fit_single_spot_scipy_args(args):
 # ── Torchimize backend (GPU batched LM) ─────────────────────────────
 
 
-def _fit_spots_torchimize(image, points, patch_radius):
-    """Fit all spots in one batched GPU call using torchimize.
+def _extract_patch_args(args):
+    """Picklable wrapper for parallel patch extraction."""
+    return _extract_patch(*args)
 
-    Uses lsq_lma_parallel to fit all spots simultaneously on GPU/CPU.
+
+def _fit_spots_torchimize(image, points, patch_radius, max_workers=None):
+    """Fit all spots using parallel extraction + batched GPU LM fitting.
+
+    1. Extract patches in parallel across CPU cores
+    2. Build batch tensors (numpy vectorized → single GPU transfer)
+    3. Fit all spots in one batched lsq_lma_parallel call on GPU
+    4. Edge spots (near image border) fall back to scipy
+
     Returns a list of SpotFit2D results.
     """
     import torch
     from torchimize.functions import lsq_lma_parallel
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Extract all patches
-    extractions = []
-    for py, px in points:
-        extractions.append(_extract_patch(image, (py, px), patch_radius))
-
-    # Separate valid from invalid
-    valid_indices = [i for i, e in enumerate(extractions) if e is not None]
-    if not valid_indices:
-        return [SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)] * len(points)
-
-    # Build uniform-sized coordinate grids and data arrays
+    n_spots = len(points)
     patch_size = 2 * patch_radius + 1
-    n_valid = len(valid_indices)
     n_pixels = patch_size * patch_size
 
-    # Pre-allocate tensors
-    data_tensor = torch.zeros(n_valid, n_pixels, dtype=torch.float32, device=device)
-    y_tensor = torch.zeros(n_valid, n_pixels, dtype=torch.float32, device=device)
-    x_tensor = torch.zeros(n_valid, n_pixels, dtype=torch.float32, device=device)
-    p_mins = np.zeros(n_valid)
-    p_maxs = np.zeros(n_valid)
+    # ── Step 1: Parallel patch extraction ────────────────────────────
+    args_list = [(image, (py, px), patch_radius) for py, px in points]
+    if n_spots > 20 and max_workers != 1:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            extractions = list(executor.map(_extract_patch_args, args_list))
+    else:
+        extractions = [_extract_patch(image, (py, px), patch_radius) for py, px in points]
 
-    # Track which valid spots have full-size patches
-    batch_indices = []  # indices into valid_indices that go into GPU batch
+    # ── Step 2: Build batch arrays (numpy, one GPU transfer) ─────────
+    valid_full = []  # (spot_index, extraction) for full-size patches
+    valid_edge = []  # spot indices for edge patches (scipy fallback)
 
-    for j, vi in enumerate(valid_indices):
-        patch_norm, local_y, local_x, p_min, p_max = extractions[vi]
+    for i, ext in enumerate(extractions):
+        if ext is None:
+            continue
+        patch_norm = ext[0]
         if patch_norm.shape == (patch_size, patch_size):
-            data_tensor[j] = torch.from_numpy(patch_norm.ravel().astype(np.float32))
-            y_tensor[j] = torch.from_numpy(local_y.ravel().astype(np.float32))
-            x_tensor[j] = torch.from_numpy(local_x.ravel().astype(np.float32))
-            p_mins[j] = p_min
-            p_maxs[j] = p_max
-            batch_indices.append(j)
+            valid_full.append((i, ext))
+        else:
+            valid_edge.append(i)
 
-    if not batch_indices:
-        # All valid spots are edge cases — fall back to scipy
-        fits = [SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)] * len(points)
-        for vi in valid_indices:
-            fits[vi] = _fit_single_spot_scipy(image, points[vi], patch_radius)
+    fits = [SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)] * n_spots
+
+    if not valid_full:
+        # All edge cases — scipy fallback
+        for i in valid_edge:
+            fits[i] = _fit_single_spot_scipy(image, points[i], patch_radius)
         return fits
 
-    n_batch = len(batch_indices)
-    batch_data = data_tensor[batch_indices]
-    batch_y = y_tensor[batch_indices]
-    batch_x = x_tensor[batch_indices]
+    n_batch = len(valid_full)
 
-    # Initial parameters: [y0, x0, sigma_y, sigma_x, A, B]
-    p_init = torch.tensor(
-        [[0, 0, 1.5, 1.5, 1.0, 0.0]] * n_batch,
-        dtype=torch.float32, device=device,
-    )
+    # Pre-allocate numpy arrays, fill vectorized, single transfer to GPU
+    data_np = np.empty((n_batch, n_pixels), dtype=np.float32)
+    y_np = np.empty((n_batch, n_pixels), dtype=np.float32)
+    x_np = np.empty((n_batch, n_pixels), dtype=np.float32)
+    p_mins = np.empty(n_batch, dtype=np.float64)
+    p_maxs = np.empty(n_batch, dtype=np.float64)
+    spot_indices = np.empty(n_batch, dtype=np.intp)
 
-    # Residual function for batched LM
+    for k, (si, (patch_norm, local_y, local_x, p_min, p_max)) in enumerate(valid_full):
+        data_np[k] = patch_norm.ravel()
+        y_np[k] = local_y.ravel()
+        x_np[k] = local_x.ravel()
+        p_mins[k] = p_min
+        p_maxs[k] = p_max
+        spot_indices[k] = si
+
+    # Single bulk transfer to GPU
+    batch_data = torch.from_numpy(data_np).to(device)
+    batch_y = torch.from_numpy(y_np).to(device)
+    batch_x = torch.from_numpy(x_np).to(device)
+
+    # ── Step 3: Batched GPU fitting ──────────────────────────────────
+    p_init = torch.zeros(n_batch, 6, dtype=torch.float32, device=device)
+    p_init[:, 2] = 1.5   # sigma_y
+    p_init[:, 3] = 1.5   # sigma_x
+    p_init[:, 4] = 1.0   # amplitude
+
     def residuals(p):
-        # p: [batch, 6]
-        y0 = p[:, 0:1]       # [batch, 1]
+        y0 = p[:, 0:1]
         x0 = p[:, 1:2]
         sy = p[:, 2:3].clamp(min=0.3)
         sx = p[:, 3:4].clamp(min=0.3)
@@ -244,42 +259,44 @@ def _fit_spots_torchimize(image, points, patch_radius):
         model = A * torch.exp(
             -(dy ** 2 / (2 * sy ** 2) + dx ** 2 / (2 * sx ** 2))
         ) + B
-        res = (model - batch_data).unsqueeze(-1)  # [batch, pixels, 1]
-        return res
+        return (model - batch_data).unsqueeze(-1)
 
     try:
-        result_list = lsq_lma_parallel(p_init, residuals, max_iter=100)
+        result_list = lsq_lma_parallel(p_init, residuals, max_iter=50)
         final_params = result_list[-1].cpu().numpy()  # [n_batch, 6]
     except Exception:
-        # Fall back to scipy for all
-        fits = [SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)] * len(points)
-        for vi in valid_indices:
-            fits[vi] = _fit_single_spot_scipy(image, points[vi], patch_radius)
+        # Total fallback to scipy
+        for k, (si, _) in enumerate(valid_full):
+            fits[si] = _fit_single_spot_scipy(image, points[si], patch_radius)
+        for si in valid_edge:
+            fits[si] = _fit_single_spot_scipy(image, points[si], patch_radius)
         return fits
 
-    # Build results
-    fits = [SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)] * len(points)
+    # ── Step 4: Build SpotFit2D results ──────────────────────────────
+    intensity_ranges = p_maxs - p_mins
 
-    for k, bi in enumerate(batch_indices):
-        vi = valid_indices[bi]
+    for k in range(n_batch):
+        si = spot_indices[k]
         y0, x0, sigma_y, sigma_x, A_norm, B_norm = final_params[k]
-        sigma_y = max(abs(sigma_y), 0.3)
-        sigma_x = max(abs(sigma_x), 0.3)
-        intensity_range = p_maxs[bi] - p_mins[bi]
-
-        fits[vi] = SpotFit2D(
+        fits[si] = SpotFit2D(
             float(y0), float(x0),
-            float(sigma_y), float(sigma_x),
-            float(A_norm * intensity_range),
-            float(B_norm * intensity_range + p_mins[bi]),
+            max(abs(float(sigma_y)), 0.3),
+            max(abs(float(sigma_x)), 0.3),
+            float(A_norm * intensity_ranges[k]),
+            float(B_norm * intensity_ranges[k] + p_mins[k]),
             success=True,
         )
 
-    # Handle edge spots (non-full-size patches) with scipy fallback
-    handled = set(valid_indices[bi] for bi in batch_indices)
-    for vi in valid_indices:
-        if vi not in handled:
-            fits[vi] = _fit_single_spot_scipy(image, points[vi], patch_radius)
+    # Edge spots — scipy fallback (parallel)
+    if valid_edge:
+        edge_args = [(image, points[si], patch_radius) for si in valid_edge]
+        if len(valid_edge) > 5 and max_workers != 1:
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                for si, fit in zip(valid_edge, executor.map(_fit_single_spot_scipy_args, edge_args)):
+                    fits[si] = fit
+        else:
+            for si in valid_edge:
+                fits[si] = _fit_single_spot_scipy(image, points[si], patch_radius)
 
     return fits
 
@@ -340,9 +357,9 @@ def fit_and_mask_2d(
 
     n_spots = len(points)
 
-    # Torchimize — batched GPU fitting
+    # Torchimize — parallel extraction + batched GPU fitting
     if backend == "torchimize":
-        fits = _fit_spots_torchimize(image, points, patch_radius)
+        fits = _fit_spots_torchimize(image, points, patch_radius, max_workers=max_workers)
         if progress_callback is not None:
             progress_callback(n_spots, n_spots)
 
