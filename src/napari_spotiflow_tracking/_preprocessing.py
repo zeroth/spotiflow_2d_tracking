@@ -215,6 +215,8 @@ def denoise_n2v(
             patch_size=[patch_size, patch_size],
             batch_size=1,
             num_epochs=n_epochs,
+            train_dataloader_params={"shuffle": True, "num_workers": 0},
+            val_dataloader_params={"num_workers": 0},
         )
         careamist = CAREamist(config)
         careamist.train(train_source=image.astype(np.float32))
@@ -223,6 +225,7 @@ def denoise_n2v(
         source=image.astype(np.float32),
         data_type="array",
     )
+
 
     if isinstance(prediction, list):
         prediction = prediction[0]

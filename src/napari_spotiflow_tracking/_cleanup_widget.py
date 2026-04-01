@@ -23,15 +23,18 @@ from napari_spotiflow_tracking._preprocessing import (
     remove_background_high_pass,
     remove_background_high_pass_stack,
     remove_background_erosion,
-    denoise_n2v,
     walking_average,
 )
+from napari_spotiflow_tracking._workers import N2VWorker
 
 
 class PreProcessingWidget(QWidget):
     def __init__(self, napari_viewer: napari.Viewer):
         super().__init__()
         self.viewer = napari_viewer
+        self._n2v_worker: N2VWorker | None = None
+        self._n2v_layer_name: str | None = None
+        self._pbr = None
         self._setup_ui()
         self._connect_events()
 
@@ -283,27 +286,45 @@ class PreProcessingWidget(QWidget):
         model_path = self._n2v_model_path.text()
         if model_path == "(train from scratch)":
             model_path = None
-            show_info(f"Training N2V model ({self._n2v_epochs.value()} epochs)...")
-        else:
-            show_info(f"Denoising with pretrained model: {model_path}")
 
-        try:
-            result = denoise_n2v(
-                image,
-                model_path=model_path,
-                n_epochs=self._n2v_epochs.value(),
-                patch_size=self._n2v_patch.value(),
-            )
-        except ImportError:
-            show_error("CAREamics not installed. Run: pip install careamics")
-            return
-        except Exception as e:
-            show_error(f"N2V failed: {e}")
-            return
+        self._n2v_layer_name = layer_name
+        self._n2v_btn.setEnabled(False)
+        self._pbr = progress(total=0, desc="N2V denoising")
 
-        self.viewer.add_image(result, name=f"{layer_name} (N2V denoised)")
+        self._n2v_worker = N2VWorker(
+            image=image,
+            model_path=model_path,
+            n_epochs=self._n2v_epochs.value(),
+            patch_size=self._n2v_patch.value(),
+        )
+        self._n2v_worker.progress.connect(self._on_n2v_progress)
+        self._n2v_worker.finished.connect(self._on_n2v_finished)
+        self._n2v_worker.errored.connect(self._on_n2v_error)
+        self._n2v_worker.start()
+
+    def _on_n2v_progress(self, msg: str):
+        self._status_label.setText(msg)
+        if self._pbr is not None:
+            self._pbr.set_description(msg)
+
+    def _on_n2v_finished(self, result):
+        if self._pbr is not None:
+            self._pbr.close()
+            self._pbr = None
+        self._n2v_btn.setEnabled(True)
+        self.viewer.add_image(
+            np.asarray(result), name=f"{self._n2v_layer_name} (N2V denoised)"
+        )
         show_info("Done — N2V denoising complete.")
         self._status_label.setText("N2V denoising complete.")
+
+    def _on_n2v_error(self, msg: str):
+        if self._pbr is not None:
+            self._pbr.close()
+            self._pbr = None
+        self._n2v_btn.setEnabled(True)
+        show_error(f"N2V failed: {msg[:300]}")
+        self._status_label.setText("N2V failed.")
 
     # ── Walking Average ───────────────────────────────────────────────
 

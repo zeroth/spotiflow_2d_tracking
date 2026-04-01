@@ -6,7 +6,7 @@ import numpy as np
 from qtpy.QtCore import QThread, Signal
 
 from napari_spotiflow_tracking._fitting import fit_and_mask_2d
-from napari_spotiflow_tracking._preprocessing import remove_background_high_pass
+from napari_spotiflow_tracking._preprocessing import remove_background_high_pass, denoise_n2v
 from napari_spotiflow_tracking._segmentation import detect_spots, detect_spots_log
 
 
@@ -120,5 +120,46 @@ class DetectionWorker(QThread):
                 self.errored.emit(
                     f"Expected 2D or 3D (T,Y,X) image, got ndim={self._image.ndim}"
                 )
+        except Exception:
+            self.errored.emit(traceback.format_exc())
+
+
+class N2VWorker(QThread):
+    """Background worker for Noise2Void denoising."""
+
+    progress = Signal(str)  # status message
+    finished = Signal(object)  # denoised image
+    errored = Signal(str)
+
+    def __init__(
+        self,
+        image: np.ndarray,
+        model_path: str | None = None,
+        n_epochs: int = 100,
+        patch_size: int = 64,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._image = image
+        self._model_path = model_path
+        self._n_epochs = n_epochs
+        self._patch_size = patch_size
+
+    def run(self):
+        try:
+            if self._model_path is None:
+                self.progress.emit(f"Training N2V model ({self._n_epochs} epochs)...")
+            else:
+                self.progress.emit("Denoising with pretrained model...")
+
+            result = denoise_n2v(
+                self._image,
+                model_path=self._model_path,
+                n_epochs=self._n_epochs,
+                patch_size=self._patch_size,
+            )
+            self.finished.emit(result)
+        except ImportError:
+            self.errored.emit("CAREamics not installed. Run: pip install careamics")
         except Exception:
             self.errored.emit(traceback.format_exc())
