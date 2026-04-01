@@ -163,3 +163,66 @@ class N2VWorker(QThread):
             self.errored.emit("CAREamics not installed. Run: pip install careamics")
         except Exception:
             self.errored.emit(traceback.format_exc())
+
+
+class MaskGenerationWorker(QThread):
+    """Background worker for Gaussian fitting + mask painting.
+
+    Processes a Points layer against an image (2D or T,Y,X stack).
+    Fitting is parallelized across CPU cores via ProcessPoolExecutor.
+    """
+
+    progress = Signal(str, int, int)  # (stage, current, total)
+    finished = Signal(object)  # mask array (2D or 3D)
+    errored = Signal(str)
+
+    def __init__(
+        self,
+        image: np.ndarray,
+        points: np.ndarray,
+        patch_radius: int = 4,
+        fallback_radius: float = 2.0,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._image = image
+        self._points = points
+        self._patch_radius = patch_radius
+        self._fallback_radius = fallback_radius
+
+    def run(self):
+        try:
+            if self._image.ndim == 2:
+                pts = self._points[:, -2:] if self._points.shape[1] > 2 else self._points
+                self.progress.emit("Fitting spots", 0, 1)
+                result = fit_and_mask_2d(
+                    self._image, pts,
+                    patch_radius=self._patch_radius,
+                    fallback_radius=self._fallback_radius,
+                )
+                self.progress.emit("Fitting spots", 1, 1)
+                self.finished.emit(result.mask)
+
+            elif self._image.ndim == 3:
+                if self._points.shape[1] != 3:
+                    self.errored.emit("Points must have 3 columns (frame, y, x) for stacks.")
+                    return
+
+                n_frames = self._image.shape[0]
+                all_masks = []
+
+                for t in range(n_frames):
+                    self.progress.emit("Fitting spots", t + 1, n_frames)
+                    frame_pts = self._points[self._points[:, 0] == t][:, 1:]
+                    result = fit_and_mask_2d(
+                        self._image[t], frame_pts,
+                        patch_radius=self._patch_radius,
+                        fallback_radius=self._fallback_radius,
+                    )
+                    all_masks.append(result.mask)
+
+                self.finished.emit(np.stack(all_masks, axis=0))
+            else:
+                self.errored.emit(f"Unsupported image dimensions: {self._image.ndim}D")
+        except Exception:
+            self.errored.emit(traceback.format_exc())

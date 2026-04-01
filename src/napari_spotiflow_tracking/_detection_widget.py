@@ -24,7 +24,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_spotiflow_tracking._segmentation import load_model
-from napari_spotiflow_tracking._workers import DetectionWorker
+from napari_spotiflow_tracking._workers import DetectionWorker, MaskGenerationWorker
 
 
 class DetectionWidget(QWidget):
@@ -32,6 +32,7 @@ class DetectionWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self._worker: DetectionWorker | None = None
+        self._mask_worker: MaskGenerationWorker | None = None
         self._last_points: np.ndarray | None = None
         self._pbr = None  # napari progress bar
         self._setup_ui()
@@ -352,39 +353,51 @@ class DetectionWidget(QWidget):
             show_error("No image selected (needed for Gaussian fitting).")
             return
 
-        from napari_spotiflow_tracking._fitting import fit_and_mask_2d
-
         points_layer = self.viewer.layers[points_name]
         image_layer = self.viewer.layers[image_name]
         points_data = np.asarray(points_layer.data)
         image_data = np.asarray(image_layer.data)
 
-        if image_data.ndim == 2:
-            # Single frame — points are (N, 2)
-            pts = points_data[:, -2:] if points_data.shape[1] > 2 else points_data
-            result = fit_and_mask_2d(image_data, pts)
-            self.viewer.add_labels(result.mask, name="Spot Masks", opacity=0.4)
-            show_info(f"Generated mask from {len(pts)} spots.")
+        self._gen_mask_btn.setEnabled(False)
+        self._detect_btn.setEnabled(False)
+        show_info("Generating masks...")
 
-        elif image_data.ndim == 3:
-            # Stack — points are (N, 3) as [frame, y, x]
-            if points_data.shape[1] != 3:
-                show_error("Points must have 3 columns (frame, y, x) for stacks.")
-                return
+        self._mask_worker = MaskGenerationWorker(
+            image=image_data,
+            points=points_data,
+        )
+        self._mask_worker.progress.connect(self._on_mask_progress)
+        self._mask_worker.finished.connect(self._on_mask_finished)
+        self._mask_worker.errored.connect(self._on_mask_error)
+        self._mask_worker.start()
 
-            show_info("Generating masks...")
-            n_frames = image_data.shape[0]
-            all_masks = []
-            for t in progress(range(n_frames), desc="Generating masks"):
-                frame_pts = points_data[points_data[:, 0] == t][:, 1:]
-                result = fit_and_mask_2d(image_data[t], frame_pts)
-                all_masks.append(result.mask)
+    def _on_mask_progress(self, stage: str, current: int, total: int):
+        self._status_label.setText(f"{stage}: {current}/{total}")
+        if self._pbr is None and total > 1:
+            self._pbr = progress(total=total, desc=stage)
+        if self._pbr is not None:
+            self._pbr.set_description(stage)
+            self._pbr.n = current
+            self._pbr.refresh()
 
-            combined = np.stack(all_masks, axis=0)
-            self.viewer.add_labels(combined, name="Spot Masks", opacity=0.4)
-            show_info(f"Done — generated mask from {len(points_data)} spots across {n_frames} frames.")
-        else:
-            show_error(f"Unsupported image dimensions: {image_data.ndim}D")
+    def _on_mask_finished(self, mask):
+        if self._pbr is not None:
+            self._pbr.close()
+            self._pbr = None
+        self._gen_mask_btn.setEnabled(True)
+        self._detect_btn.setEnabled(True)
+        self.viewer.add_labels(np.asarray(mask), name="Spot Masks", opacity=0.4)
+        show_info("Done — mask generated.")
+        self._status_label.setText("Mask generated.")
+
+    def _on_mask_error(self, msg: str):
+        if self._pbr is not None:
+            self._pbr.close()
+            self._pbr = None
+        self._gen_mask_btn.setEnabled(True)
+        self._detect_btn.setEnabled(True)
+        show_error(f"Mask generation failed: {msg[:200]}")
+        self._status_label.setText("Mask generation failed.")
 
     def _export_blobs(self):
         if self._last_points is None or len(self._last_points) == 0:

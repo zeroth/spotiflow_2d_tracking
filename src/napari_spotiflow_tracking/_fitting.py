@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -117,16 +118,40 @@ def _fit_single_spot(image: np.ndarray, center_yx: tuple[int, int],
         return SpotFit2D(0, 0, 1.0, 1.0, 0, 0, success=False)
 
 
+def _fit_single_spot_args(args):
+    """Top-level wrapper for ProcessPoolExecutor (must be picklable)."""
+    image, center_yx, patch_radius = args
+    return _fit_single_spot(image, center_yx, patch_radius)
+
+
+def _paint_spot(mask, fit, center_yx, label, fallback_radius):
+    """Paint a single spot into the shared mask."""
+    cy, cx = int(round(center_yx[0])), int(round(center_yx[1]))
+    if fit.success:
+        fit.paint_mask(mask, center_yx=(cy, cx), label=label)
+    else:
+        fallback_sigma = 2.0 * fallback_radius / FWHM_CONSTANT
+        fallback = SpotFit2D(
+            0, 0,
+            sigma_y=fallback_sigma,
+            sigma_x=fallback_sigma,
+            amplitude=0, background=0, success=True,
+        )
+        fallback.paint_mask(mask, center_yx=(cy, cx), label=label)
+
+
 def fit_and_mask_2d(
     image: np.ndarray,
     points: np.ndarray,
     patch_radius: int = 4,
     fallback_radius: float = 2.0,
     progress_callback=None,
+    max_workers: int | None = None,
 ) -> FitAndMaskResult:
     """Fit 2D Gaussians to detected spots and paint labeled masks.
 
-    Single-pass: each spot is fitted and immediately painted into the shared mask.
+    Fitting is parallelized across CPU cores using ProcessPoolExecutor.
+    Mask painting is sequential (writes to shared array).
 
     Args:
         image: 2D image (Y, X).
@@ -134,39 +159,36 @@ def fit_and_mask_2d(
         patch_radius: half-size of patch extracted around each spot for fitting.
         fallback_radius: radius for circular mask when fitting fails.
         progress_callback: optional callable(current, total) for progress updates.
+        max_workers: number of parallel workers for fitting. None = cpu_count.
 
     Returns:
         FitAndMaskResult with per-spot fits and uint16 labeled mask.
     """
     mask = np.zeros(image.shape[:2], dtype=np.uint16)
-    fits: list[SpotFit2D] = []
 
     if len(points) == 0:
-        return FitAndMaskResult(fits=fits, mask=mask)
+        return FitAndMaskResult(fits=[], mask=mask)
 
-    for i, (py, px) in enumerate(points):
-        fit = _fit_single_spot(image, (py, px), patch_radius)
-        fits.append(fit)
+    n_spots = len(points)
 
-        label = i + 1
-        cy, cx = int(round(py)), int(round(px))
+    # Parallel fitting
+    if n_spots > 10 and max_workers != 1:
+        args_list = [(image, (py, px), patch_radius) for py, px in points]
+        fits = []
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            for i, fit in enumerate(executor.map(_fit_single_spot_args, args_list)):
+                fits.append(fit)
+                if progress_callback is not None:
+                    progress_callback(i + 1, n_spots)
+    else:
+        fits = []
+        for i, (py, px) in enumerate(points):
+            fits.append(_fit_single_spot(image, (py, px), patch_radius))
+            if progress_callback is not None:
+                progress_callback(i + 1, n_spots)
 
-        if fit.success:
-            fit.paint_mask(mask, center_yx=(cy, cx), label=label)
-        else:
-            # Fallback: paint circular mask with fixed radius
-            # Convert radius to sigma: radius = FWHM/2 = FWHM_CONSTANT * sigma / 2
-            # => sigma = 2 * radius / FWHM_CONSTANT
-            fallback_sigma = 2.0 * fallback_radius / FWHM_CONSTANT
-            fallback = SpotFit2D(
-                0, 0,
-                sigma_y=fallback_sigma,
-                sigma_x=fallback_sigma,
-                amplitude=0, background=0, success=True,
-            )
-            fallback.paint_mask(mask, center_yx=(cy, cx), label=label)
-
-        if progress_callback is not None:
-            progress_callback(i + 1, len(points))
+    # Sequential mask painting (shared array)
+    for i, fit in enumerate(fits):
+        _paint_spot(mask, fit, points[i], i + 1, fallback_radius)
 
     return FitAndMaskResult(fits=fits, mask=mask)
