@@ -221,12 +221,15 @@ def denoise_n2v(
         careamist = CAREamist(config)
         careamist.train(train_source=image.astype(np.float32))
 
-    prediction = careamist.predict(
+    pred_kwargs = dict(
         source=image.astype(np.float32),
         data_type="array",
         dataloader_params={"num_workers": 0},
     )
+    if image.ndim == 2:
+        pred_kwargs["axes"] = "YX"
 
+    prediction = careamist.predict(**pred_kwargs)
 
     if isinstance(prediction, list):
         prediction = prediction[0]

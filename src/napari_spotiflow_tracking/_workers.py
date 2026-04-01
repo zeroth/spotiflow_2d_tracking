@@ -136,8 +136,11 @@ def _n2v_subprocess(image, model_path, n_epochs, patch_size, result_queue):
         result_queue.put(("ok", result))
     except ImportError:
         result_queue.put(("import_error", "CAREamics not installed. Run: pip install careamics"))
-    except Exception:
-        result_queue.put(("error", traceback.format_exc()))
+    except Exception as e:
+        # Capture full traceback as string to avoid truncation in queue
+        tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        print(tb, flush=True)  # also print to console for debugging
+        result_queue.put(("error", tb))
 
 
 class N2VWorker(QThread):
