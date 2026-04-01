@@ -247,6 +247,7 @@ class MaskGenerationWorker(QThread):
             mask, intensity_image=image, properties=properties,
         )
         df = pd.DataFrame(table)
+        df.rename(columns={"centroid-0": "y", "centroid-1": "x"}, inplace=True)
         if frame is not None:
             df.insert(0, "frame", frame)
         return df

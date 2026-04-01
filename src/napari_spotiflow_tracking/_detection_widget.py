@@ -555,9 +555,9 @@ class DetectionWidget(QWidget):
 
         # Build filtered Points layer from centroids
         if "frame" in filtered.columns:
-            points_data = filtered[["frame", "centroid-0", "centroid-1"]].to_numpy()
+            points_data = filtered[["frame", "y", "x"]].to_numpy()
         else:
-            points_data = filtered[["centroid-0", "centroid-1"]].to_numpy()
+            points_data = filtered[["y", "x"]].to_numpy()
 
         self.viewer.add_points(
             points_data,
@@ -627,6 +627,7 @@ class DetectionWidget(QWidget):
                 mask_data, intensity_image=image_data, properties=properties,
             )
             df = pd.DataFrame(table)
+            df.rename(columns={"centroid-0": "y", "centroid-1": "x"}, inplace=True)
         elif mask_data.ndim == 3:
             show_info("Computing region properties...")
             frames = []
@@ -636,6 +637,7 @@ class DetectionWidget(QWidget):
                     properties=properties,
                 )
                 frame_df = pd.DataFrame(table)
+                frame_df.rename(columns={"centroid-0": "y", "centroid-1": "x"}, inplace=True)
                 frame_df.insert(0, "frame", t)
                 frames.append(frame_df)
             df = pd.concat(frames, ignore_index=True)
