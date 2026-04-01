@@ -198,10 +198,16 @@ class DetectionWidget(QWidget):
         mask_group.setLayout(mask_layout)
         layout.addWidget(mask_group)
 
-        # Detect button
+        # Detect button + cancel
+        detect_row = QHBoxLayout()
         self._detect_btn = QPushButton("Detect Spots")
         self._detect_btn.clicked.connect(self._run_detection)
-        layout.addWidget(self._detect_btn)
+        detect_row.addWidget(self._detect_btn)
+        self._cancel_detect_btn = QPushButton("Cancel")
+        self._cancel_detect_btn.clicked.connect(self._cancel_detection)
+        self._cancel_detect_btn.setEnabled(False)
+        detect_row.addWidget(self._cancel_detect_btn)
+        layout.addLayout(detect_row)
 
         # Export button
         self._export_btn = QPushButton("Export Blobs to CSV")
@@ -318,6 +324,7 @@ class DetectionWidget(QWidget):
             log_num_sigma=self._log_num_sigma.value(),
             log_threshold=self._log_threshold.value(),
         )
+        self._cancel_detect_btn.setEnabled(True)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_detection_finished)
         self._worker.errored.connect(self._on_detection_error)
@@ -338,6 +345,7 @@ class DetectionWidget(QWidget):
             self._pbr = None
         self._detect_btn.setEnabled(True)
         self._gen_mask_btn.setEnabled(True)
+        self._cancel_detect_btn.setEnabled(False)
         self._last_points = points
         self._export_btn.setEnabled(len(points) > 0)
         n_spots = len(points)
@@ -489,5 +497,32 @@ class DetectionWidget(QWidget):
             self._pbr = None
         self._detect_btn.setEnabled(True)
         self._gen_mask_btn.setEnabled(True)
+        self._cancel_detect_btn.setEnabled(False)
         self._status_label.setText(f"Error: {msg[:200]}")
         show_error(f"Detection failed: {msg[:200]}")
+
+    def _cancel_detection(self):
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.progress.disconnect(self._on_progress)
+            self._worker.finished.disconnect(self._on_detection_finished)
+            self._worker.errored.disconnect(self._on_detection_error)
+            self._worker.requestInterruption()
+            self._worker.terminate()
+            self._worker.wait(3000)
+        self._worker = None
+        if self._mask_worker is not None and self._mask_worker.isRunning():
+            self._mask_worker.progress.disconnect(self._on_mask_progress)
+            self._mask_worker.finished.disconnect(self._on_mask_finished)
+            self._mask_worker.errored.disconnect(self._on_mask_error)
+            self._mask_worker.requestInterruption()
+            self._mask_worker.terminate()
+            self._mask_worker.wait(3000)
+        self._mask_worker = None
+        if self._pbr is not None:
+            self._pbr.close()
+            self._pbr = None
+        self._detect_btn.setEnabled(True)
+        self._gen_mask_btn.setEnabled(True)
+        self._cancel_detect_btn.setEnabled(False)
+        show_info("Cancelled.")
+        self._status_label.setText("Cancelled.")
