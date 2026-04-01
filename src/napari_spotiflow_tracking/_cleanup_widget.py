@@ -152,6 +152,12 @@ class PreProcessingWidget(QWidget):
         self._n2v_btn = QPushButton("Denoise (N2V)")
         self._n2v_btn.clicked.connect(self._run_n2v)
         n2v_btn_row.addWidget(self._n2v_btn)
+        self._n2v_preview_btn = QPushButton("Quick Preview")
+        self._n2v_preview_btn.setToolTip(
+            "Apply N2V on the current time point only to test epoch settings"
+        )
+        self._n2v_preview_btn.clicked.connect(self._run_n2v_preview)
+        n2v_btn_row.addWidget(self._n2v_preview_btn)
         self._n2v_cancel_btn = QPushButton("Cancel")
         self._n2v_cancel_btn.clicked.connect(self._cancel_n2v)
         self._n2v_cancel_btn.setEnabled(False)
@@ -280,6 +286,44 @@ class PreProcessingWidget(QWidget):
 
     # ── Noise2Void ────────────────────────────────────────────────────
 
+    def _run_n2v_preview(self):
+        """Run N2V on the current time point only for quick parameter testing."""
+        layer_name, image = self._get_image()
+        if image is None:
+            return
+
+        if image.ndim == 2:
+            frame_image = image
+            frame_idx = None
+        elif image.ndim == 3:
+            frame_idx = int(self.viewer.dims.current_step[0])
+            frame_image = image[frame_idx]
+        else:
+            show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
+            return
+
+        model_path = self._n2v_model_path.text()
+        if model_path == "(train from scratch)":
+            model_path = None
+
+        suffix = f" (frame {frame_idx})" if frame_idx is not None else ""
+        self._n2v_layer_name = f"{layer_name} N2V preview{suffix}"
+        self._n2v_preview_btn.setEnabled(False)
+        self._n2v_btn.setEnabled(False)
+        self._n2v_cancel_btn.setEnabled(True)
+        self._pbr = progress(total=0, desc=f"N2V preview{suffix}")
+
+        self._n2v_worker = N2VWorker(
+            image=frame_image,
+            model_path=model_path,
+            n_epochs=self._n2v_epochs.value(),
+            patch_size=self._n2v_patch.value(),
+        )
+        self._n2v_worker.progress.connect(self._on_n2v_progress)
+        self._n2v_worker.finished.connect(self._on_n2v_finished)
+        self._n2v_worker.errored.connect(self._on_n2v_error)
+        self._n2v_worker.start()
+
     def _run_n2v(self):
         layer_name, image = self._get_image()
         if image is None:
@@ -294,6 +338,7 @@ class PreProcessingWidget(QWidget):
             model_path = None
 
         self._n2v_layer_name = layer_name
+        self._n2v_preview_btn.setEnabled(False)
         self._n2v_btn.setEnabled(False)
         self._n2v_cancel_btn.setEnabled(True)
         self._pbr = progress(total=0, desc="N2V denoising")
@@ -319,18 +364,21 @@ class PreProcessingWidget(QWidget):
             self._pbr.close()
             self._pbr = None
         self._n2v_btn.setEnabled(True)
+        self._n2v_preview_btn.setEnabled(True)
         self._n2v_cancel_btn.setEnabled(False)
-        self.viewer.add_image(
-            np.asarray(result), name=f"{self._n2v_layer_name} (N2V denoised)"
-        )
-        show_info("Done — N2V denoising complete.")
-        self._status_label.setText("N2V denoising complete.")
+        name = self._n2v_layer_name or ""
+        if "preview" not in name.lower():
+            name = f"{name} (N2V denoised)"
+        self.viewer.add_image(np.asarray(result), name=name)
+        show_info(f"Done — {name}.")
+        self._status_label.setText(f"{name}.")
 
     def _on_n2v_error(self, msg: str):
         if self._pbr is not None:
             self._pbr.close()
             self._pbr = None
         self._n2v_btn.setEnabled(True)
+        self._n2v_preview_btn.setEnabled(True)
         self._n2v_cancel_btn.setEnabled(False)
         show_error(f"N2V failed: {msg[:300]}")
         self._status_label.setText("N2V failed.")
@@ -347,6 +395,7 @@ class PreProcessingWidget(QWidget):
             self._pbr.close()
             self._pbr = None
         self._n2v_btn.setEnabled(True)
+        self._n2v_preview_btn.setEnabled(True)
         self._n2v_cancel_btn.setEnabled(False)
         show_info("N2V cancelled.")
         self._status_label.setText("N2V cancelled.")
