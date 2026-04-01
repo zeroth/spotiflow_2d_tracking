@@ -191,9 +191,15 @@ class DetectionWidget(QWidget):
         mask_row.addWidget(self._points_combo)
         mask_layout.addLayout(mask_row)
 
+        mask_btn_row = QHBoxLayout()
         self._gen_mask_btn = QPushButton("Generate Mask from Points")
         self._gen_mask_btn.clicked.connect(self._generate_mask_from_points)
-        mask_layout.addWidget(self._gen_mask_btn)
+        mask_btn_row.addWidget(self._gen_mask_btn)
+        self._cancel_mask_btn = QPushButton("Cancel")
+        self._cancel_mask_btn.clicked.connect(self._cancel_mask_generation)
+        self._cancel_mask_btn.setEnabled(False)
+        mask_btn_row.addWidget(self._cancel_mask_btn)
+        mask_layout.addLayout(mask_btn_row)
 
         mask_group.setLayout(mask_layout)
         layout.addWidget(mask_group)
@@ -381,6 +387,7 @@ class DetectionWidget(QWidget):
 
         self._gen_mask_btn.setEnabled(False)
         self._detect_btn.setEnabled(False)
+        self._cancel_mask_btn.setEnabled(True)
         show_info("Generating masks...")
 
         self._mask_worker = MaskGenerationWorker(
@@ -408,6 +415,7 @@ class DetectionWidget(QWidget):
             self._pbr = None
         self._gen_mask_btn.setEnabled(True)
         self._detect_btn.setEnabled(True)
+        self._cancel_mask_btn.setEnabled(False)
         self.viewer.add_labels(np.asarray(mask), name="Spot Masks", opacity=0.4)
         show_info("Done — mask generated.")
         self._status_label.setText("Mask generated.")
@@ -418,8 +426,27 @@ class DetectionWidget(QWidget):
             self._pbr = None
         self._gen_mask_btn.setEnabled(True)
         self._detect_btn.setEnabled(True)
+        self._cancel_mask_btn.setEnabled(False)
         show_error(f"Mask generation failed: {msg[:200]}")
         self._status_label.setText("Mask generation failed.")
+
+    def _cancel_mask_generation(self):
+        if self._mask_worker is not None and self._mask_worker.isRunning():
+            self._mask_worker.progress.disconnect(self._on_mask_progress)
+            self._mask_worker.finished.disconnect(self._on_mask_finished)
+            self._mask_worker.errored.disconnect(self._on_mask_error)
+            self._mask_worker.requestInterruption()
+            self._mask_worker.terminate()
+            self._mask_worker.wait(3000)
+        self._mask_worker = None
+        if self._pbr is not None:
+            self._pbr.close()
+            self._pbr = None
+        self._gen_mask_btn.setEnabled(True)
+        self._detect_btn.setEnabled(True)
+        self._cancel_mask_btn.setEnabled(False)
+        show_info("Mask generation cancelled.")
+        self._status_label.setText("Mask generation cancelled.")
 
     def _export_blobs(self):
         if self._last_points is None or len(self._last_points) == 0:

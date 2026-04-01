@@ -169,7 +169,7 @@ class PreProcessingWidget(QWidget):
         row_win.addWidget(QLabel("Window size:"))
         self._window_size = QSpinBox()
         self._window_size.setRange(1, 99)
-        self._window_size.setSingleStep(2)
+        self._window_size.setSingleStep(1)
         self._window_size.setValue(3)
         row_win.addWidget(self._window_size)
         wa_layout.addLayout(row_win)
