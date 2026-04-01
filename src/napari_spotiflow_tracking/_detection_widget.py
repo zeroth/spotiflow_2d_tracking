@@ -204,6 +204,60 @@ class DetectionWidget(QWidget):
         mask_group.setLayout(mask_layout)
         layout.addWidget(mask_group)
 
+        # ── Spot Filtering ────────────────────────────────────────────
+        filter_group = QGroupBox("Spot Filtering")
+        filter_layout = QVBoxLayout()
+
+        filter_layout.addWidget(QLabel(
+            "Filter spots by region properties (from mask metadata)."
+        ))
+
+        # Labels layer selector
+        filter_mask_row = QHBoxLayout()
+        filter_mask_row.addWidget(QLabel("Mask layer:"))
+        self._filter_mask_combo = QComboBox()
+        filter_mask_row.addWidget(self._filter_mask_combo)
+        filter_layout.addLayout(filter_mask_row)
+
+        # Min/max area
+        area_row = QHBoxLayout()
+        area_row.addWidget(QLabel("Area:"))
+        self._min_area = QSpinBox()
+        self._min_area.setRange(0, 100000)
+        self._min_area.setValue(0)
+        self._min_area.setPrefix("min: ")
+        area_row.addWidget(self._min_area)
+        self._max_area = QSpinBox()
+        self._max_area.setRange(0, 100000)
+        self._max_area.setValue(100000)
+        self._max_area.setPrefix("max: ")
+        area_row.addWidget(self._max_area)
+        filter_layout.addLayout(area_row)
+
+        # Min/max mean intensity
+        intens_row = QHBoxLayout()
+        intens_row.addWidget(QLabel("Mean intensity:"))
+        self._min_intensity = QDoubleSpinBox()
+        self._min_intensity.setRange(0, 1e6)
+        self._min_intensity.setValue(0)
+        self._min_intensity.setPrefix("min: ")
+        self._min_intensity.setDecimals(1)
+        intens_row.addWidget(self._min_intensity)
+        self._max_intensity = QDoubleSpinBox()
+        self._max_intensity.setRange(0, 1e6)
+        self._max_intensity.setValue(1e6)
+        self._max_intensity.setPrefix("max: ")
+        self._max_intensity.setDecimals(1)
+        intens_row.addWidget(self._max_intensity)
+        filter_layout.addLayout(intens_row)
+
+        self._filter_btn = QPushButton("Apply Filter")
+        self._filter_btn.clicked.connect(self._apply_filter)
+        filter_layout.addWidget(self._filter_btn)
+
+        filter_group.setLayout(filter_layout)
+        layout.addWidget(filter_group)
+
         # Detect button + cancel
         detect_row = QHBoxLayout()
         self._detect_btn = QPushButton("Detect Spots")
@@ -228,6 +282,7 @@ class DetectionWidget(QWidget):
         layout.addStretch()
         self._refresh_image_combo()
         self._refresh_points_combo()
+        self._refresh_filter_mask_combo()
 
     def _connect_events(self):
         self.viewer.layers.events.inserted.connect(self._on_layer_change)
@@ -236,6 +291,7 @@ class DetectionWidget(QWidget):
     def _on_layer_change(self, event=None):
         self._refresh_image_combo()
         self._refresh_points_combo()
+        self._refresh_filter_mask_combo()
 
     def _refresh_image_combo(self):
         prev = self._image_combo.currentText()
@@ -256,6 +312,16 @@ class DetectionWidget(QWidget):
         idx = self._points_combo.findText(prev)
         if idx >= 0:
             self._points_combo.setCurrentIndex(idx)
+
+    def _refresh_filter_mask_combo(self):
+        prev = self._filter_mask_combo.currentText()
+        self._filter_mask_combo.clear()
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Labels):
+                self._filter_mask_combo.addItem(layer.name)
+        idx = self._filter_mask_combo.findText(prev)
+        if idx >= 0:
+            self._filter_mask_combo.setCurrentIndex(idx)
 
     def _on_method_changed(self, method: str):
         is_spotiflow = method == "Spotiflow"
@@ -409,16 +475,23 @@ class DetectionWidget(QWidget):
             self._pbr.n = current
             self._pbr.refresh()
 
-    def _on_mask_finished(self, mask):
+    def _on_mask_finished(self, mask, props_df):
         if self._pbr is not None:
             self._pbr.close()
             self._pbr = None
         self._gen_mask_btn.setEnabled(True)
         self._detect_btn.setEnabled(True)
         self._cancel_mask_btn.setEnabled(False)
-        self.viewer.add_labels(np.asarray(mask), name="Spot Masks", opacity=0.4)
-        show_info("Done — mask generated.")
-        self._status_label.setText("Mask generated.")
+
+        mask_layer = self.viewer.add_labels(
+            np.asarray(mask), name="Spot Masks", opacity=0.4,
+        )
+        # Store regionprops in layer metadata for downstream filtering
+        mask_layer.metadata["regionprops"] = props_df
+
+        n_regions = len(props_df)
+        show_info(f"Done — mask generated ({n_regions} regions with properties).")
+        self._status_label.setText(f"Mask generated ({n_regions} regions).")
 
     def _on_mask_error(self, msg: str):
         if self._pbr is not None:
@@ -447,6 +520,61 @@ class DetectionWidget(QWidget):
         self._cancel_mask_btn.setEnabled(False)
         show_info("Mask generation cancelled.")
         self._status_label.setText("Mask generation cancelled.")
+
+    # ── Spot Filtering ────────────────────────────────────────────────
+
+    def _apply_filter(self):
+        """Filter spots by area and intensity using regionprops from mask metadata."""
+        mask_name = self._filter_mask_combo.currentText()
+        if not mask_name:
+            show_error("No mask layer selected.")
+            return
+
+        mask_layer = self.viewer.layers[mask_name]
+        props_df = mask_layer.metadata.get("regionprops")
+        if props_df is None or len(props_df) == 0:
+            show_error("No regionprops in mask metadata. Generate mask first.")
+            return
+
+        min_area = self._min_area.value()
+        max_area = self._max_area.value()
+        min_intens = self._min_intensity.value()
+        max_intens = self._max_intensity.value()
+
+        # Filter
+        filtered = props_df[
+            (props_df["area"] >= min_area)
+            & (props_df["area"] <= max_area)
+            & (props_df["mean_intensity"] >= min_intens)
+            & (props_df["mean_intensity"] <= max_intens)
+        ]
+
+        n_before = len(props_df)
+        n_after = len(filtered)
+        n_removed = n_before - n_after
+
+        # Build filtered Points layer from centroids
+        if "frame" in filtered.columns:
+            points_data = filtered[["frame", "centroid-0", "centroid-1"]].to_numpy()
+        else:
+            points_data = filtered[["centroid-0", "centroid-1"]].to_numpy()
+
+        self.viewer.add_points(
+            points_data,
+            name="Filtered Spots",
+            size=3,
+            face_color="green",
+        )
+
+        # Store filtered props in the new points layer metadata
+        pts_layers = [l for l in self.viewer.layers if l.name == "Filtered Spots"]
+        if pts_layers:
+            pts_layers[-1].metadata["regionprops"] = filtered.reset_index(drop=True)
+
+        show_info(f"Filter: kept {n_after}/{n_before} spots (removed {n_removed}).")
+        self._status_label.setText(
+            f"Filtered: {n_after}/{n_before} spots kept."
+        )
 
     def _export_blobs(self):
         if self._last_points is None or len(self._last_points) == 0:

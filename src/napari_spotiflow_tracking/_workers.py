@@ -208,14 +208,14 @@ class N2VWorker(QThread):
 
 
 class MaskGenerationWorker(QThread):
-    """Background worker for Gaussian fitting + mask painting.
+    """Background worker for Gaussian fitting + mask painting + regionprops.
 
     Processes a Points layer against an image (2D or T,Y,X stack).
-    Fitting is parallelized across CPU cores via ProcessPoolExecutor.
+    Computes regionprops per frame alongside mask generation.
     """
 
     progress = Signal(str, int, int)  # (stage, current, total)
-    finished = Signal(object)  # mask array (2D or 3D)
+    finished = Signal(object, object)  # (mask array, regionprops DataFrame)
     errored = Signal(str)
 
     def __init__(
@@ -234,7 +234,26 @@ class MaskGenerationWorker(QThread):
         self._fallback_radius = fallback_radius
         self._fit_backend = fit_backend
 
+    def _compute_regionprops(self, mask, image, frame=None):
+        """Compute regionprops for a single frame."""
+        import pandas as pd
+        from skimage.measure import regionprops_table
+
+        properties = [
+            "label", "area", "centroid", "mean_intensity", "max_intensity",
+            "min_intensity", "equivalent_diameter", "perimeter", "solidity",
+        ]
+        table = regionprops_table(
+            mask, intensity_image=image, properties=properties,
+        )
+        df = pd.DataFrame(table)
+        if frame is not None:
+            df.insert(0, "frame", frame)
+        return df
+
     def run(self):
+        import pandas as pd
+
         try:
             if self._image.ndim == 2:
                 pts = self._points[:, -2:] if self._points.shape[1] > 2 else self._points
@@ -245,8 +264,9 @@ class MaskGenerationWorker(QThread):
                     fallback_radius=self._fallback_radius,
                     backend=self._fit_backend,
                 )
+                props_df = self._compute_regionprops(result.mask, self._image)
                 self.progress.emit("Fitting spots", 1, 1)
-                self.finished.emit(result.mask)
+                self.finished.emit(result.mask, props_df)
 
             elif self._image.ndim == 3:
                 if self._points.shape[1] != 3:
@@ -255,6 +275,7 @@ class MaskGenerationWorker(QThread):
 
                 n_frames = self._image.shape[0]
                 all_masks = []
+                all_props = []
 
                 for t in range(n_frames):
                     self.progress.emit("Fitting spots", t + 1, n_frames)
@@ -266,8 +287,13 @@ class MaskGenerationWorker(QThread):
                         backend=self._fit_backend,
                     )
                     all_masks.append(result.mask)
+                    all_props.append(
+                        self._compute_regionprops(result.mask, self._image[t], frame=t)
+                    )
 
-                self.finished.emit(np.stack(all_masks, axis=0))
+                combined_mask = np.stack(all_masks, axis=0)
+                combined_props = pd.concat(all_props, ignore_index=True)
+                self.finished.emit(combined_mask, combined_props)
             else:
                 self.errored.emit(f"Unsupported image dimensions: {self._image.ndim}D")
         except Exception:
