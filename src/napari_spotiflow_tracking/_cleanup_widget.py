@@ -148,9 +148,15 @@ class PreProcessingWidget(QWidget):
         train_row.addWidget(self._n2v_patch)
         n2v_layout.addLayout(train_row)
 
+        n2v_btn_row = QHBoxLayout()
         self._n2v_btn = QPushButton("Denoise (N2V)")
         self._n2v_btn.clicked.connect(self._run_n2v)
-        n2v_layout.addWidget(self._n2v_btn)
+        n2v_btn_row.addWidget(self._n2v_btn)
+        self._n2v_cancel_btn = QPushButton("Cancel")
+        self._n2v_cancel_btn.clicked.connect(self._cancel_n2v)
+        self._n2v_cancel_btn.setEnabled(False)
+        n2v_btn_row.addWidget(self._n2v_cancel_btn)
+        n2v_layout.addLayout(n2v_btn_row)
 
         n2v_group.setLayout(n2v_layout)
         layout.addWidget(n2v_group)
@@ -289,6 +295,7 @@ class PreProcessingWidget(QWidget):
 
         self._n2v_layer_name = layer_name
         self._n2v_btn.setEnabled(False)
+        self._n2v_cancel_btn.setEnabled(True)
         self._pbr = progress(total=0, desc="N2V denoising")
 
         self._n2v_worker = N2VWorker(
@@ -312,6 +319,7 @@ class PreProcessingWidget(QWidget):
             self._pbr.close()
             self._pbr = None
         self._n2v_btn.setEnabled(True)
+        self._n2v_cancel_btn.setEnabled(False)
         self.viewer.add_image(
             np.asarray(result), name=f"{self._n2v_layer_name} (N2V denoised)"
         )
@@ -323,8 +331,23 @@ class PreProcessingWidget(QWidget):
             self._pbr.close()
             self._pbr = None
         self._n2v_btn.setEnabled(True)
+        self._n2v_cancel_btn.setEnabled(False)
         show_error(f"N2V failed: {msg[:300]}")
         self._status_label.setText("N2V failed.")
+
+    def _cancel_n2v(self):
+        if self._n2v_worker is not None and self._n2v_worker.isRunning():
+            self._n2v_worker.requestInterruption()
+            self._n2v_worker.terminate()
+            self._n2v_worker.wait(3000)
+            self._n2v_worker = None
+        if self._pbr is not None:
+            self._pbr.close()
+            self._pbr = None
+        self._n2v_btn.setEnabled(True)
+        self._n2v_cancel_btn.setEnabled(False)
+        show_info("N2V cancelled.")
+        self._status_label.setText("N2V cancelled.")
 
     # ── Walking Average ───────────────────────────────────────────────
 
