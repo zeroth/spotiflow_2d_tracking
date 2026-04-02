@@ -179,6 +179,7 @@ def denoise_n2v(
     model_path: str | None = None,
     n_epochs: int = 100,
     patch_size: int = 64,
+    mode: str = "2D",
 ) -> np.ndarray:
     """Denoise an image using Noise2Void (CAREamics).
 
@@ -186,11 +187,14 @@ def denoise_n2v(
     Otherwise, trains a new N2V model on the input image (self-supervised).
 
     Args:
-        image: 2D image (Y, X) or 3D stack (T, Y, X).
+        image: 2D image (Y, X) or 3D stack (T, Y, X) / volume (Z, Y, X).
         model_path: path to a pretrained CAREamics model (.zip or .ckpt).
                     If None, trains a new model on the input data.
         n_epochs: number of training epochs (only used when training).
         patch_size: patch size for training/prediction.
+        mode: '2D' or '3D'.
+              2D: for stacks, each frame is an independent sample (axes=SYX).
+              3D: stack is treated as a single volume (axes=ZYX).
 
     Returns:
         Denoised image with same shape as input.
@@ -198,21 +202,30 @@ def denoise_n2v(
     from careamics import CAREamist
     from careamics.config import create_n2v_configuration
 
+    is_3d = mode.upper() == "3D"
+
     if model_path is not None:
         careamist = CAREamist(model_path)
     else:
+        # Determine axes
         if image.ndim == 2:
             axes = "YX"
         elif image.ndim == 3:
-            axes = "SYX"
+            axes = "ZYX" if is_3d else "SYX"
         else:
             raise ValueError(f"Expected 2D or 3D image, got {image.ndim}D")
+
+        # Patch size: 3D needs a Z patch dimension
+        if is_3d and image.ndim == 3:
+            ps = [min(patch_size, image.shape[0]), patch_size, patch_size]
+        else:
+            ps = [patch_size, patch_size]
 
         config = create_n2v_configuration(
             experiment_name="n2v_denoise",
             data_type="array",
             axes=axes,
-            patch_size=[patch_size, patch_size],
+            patch_size=ps,
             batch_size=1,
             num_epochs=n_epochs,
             train_dataloader_params={"shuffle": True, "num_workers": 0},
@@ -221,9 +234,17 @@ def denoise_n2v(
         careamist = CAREamist(config)
         careamist.train(train_source=image.astype(np.float32))
 
-    # Use tiling to handle images whose dimensions aren't divisible by 2^depth
-    tile_size = (patch_size, patch_size)
-    tile_overlap = (patch_size // 4, patch_size // 4)
+    # Tiling for prediction
+    if is_3d and image.ndim == 3:
+        tile_size = (min(patch_size, image.shape[0]), patch_size, patch_size)
+        tile_overlap = (
+            min(patch_size // 4, image.shape[0] // 2),
+            patch_size // 4,
+            patch_size // 4,
+        )
+    else:
+        tile_size = (patch_size, patch_size)
+        tile_overlap = (patch_size // 4, patch_size // 4)
 
     pred_kwargs = dict(
         source=image.astype(np.float32),
@@ -234,6 +255,8 @@ def denoise_n2v(
     )
     if image.ndim == 2:
         pred_kwargs["axes"] = "YX"
+    elif image.ndim == 3:
+        pred_kwargs["axes"] = "ZYX" if is_3d else "SYX"
 
     prediction = careamist.predict(**pred_kwargs)
 

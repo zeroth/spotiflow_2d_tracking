@@ -133,6 +133,18 @@ class PreProcessingWidget(QWidget):
         model_row.addWidget(clear_btn)
         n2v_layout.addLayout(model_row)
 
+        # Mode selector
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Mode:"))
+        self._n2v_mode = QComboBox()
+        self._n2v_mode.addItems(["2D", "3D"])
+        self._n2v_mode.setToolTip(
+            "2D: each frame is an independent sample (SYX). "
+            "3D: stack is treated as a single volume (ZYX)."
+        )
+        mode_row.addWidget(self._n2v_mode)
+        n2v_layout.addLayout(mode_row)
+
         # Training params
         train_row = QHBoxLayout()
         train_row.addWidget(QLabel("Epochs:"))
@@ -318,6 +330,7 @@ class PreProcessingWidget(QWidget):
             model_path=model_path,
             n_epochs=self._n2v_epochs.value(),
             patch_size=self._n2v_patch.value(),
+            mode="2D",  # preview always runs on a single 2D frame
         )
         self._n2v_worker.progress.connect(self._on_n2v_progress)
         self._n2v_worker.finished.connect(self._on_n2v_finished)
@@ -348,6 +361,7 @@ class PreProcessingWidget(QWidget):
             model_path=model_path,
             n_epochs=self._n2v_epochs.value(),
             patch_size=self._n2v_patch.value(),
+            mode=self._n2v_mode.currentText(),
         )
         self._n2v_worker.progress.connect(self._on_n2v_progress)
         self._n2v_worker.finished.connect(self._on_n2v_finished)
