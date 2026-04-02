@@ -299,19 +299,45 @@ class PreProcessingWidget(QWidget):
     # ── Noise2Void ────────────────────────────────────────────────────
 
     def _run_n2v_preview(self):
-        """Run N2V on the current time point only for quick parameter testing."""
+        """Run N2V on the current time point only for quick parameter testing.
+
+        Respects 2D/3D mode:
+        - 2D + 3D stack: extracts current frame as 2D (Y,X)
+        - 3D + 4D stack: extracts current time point as 3D volume (Z,Y,X)
+        - 2D + 2D image: uses as-is
+        - 3D + 3D stack: uses as-is (single 3D volume)
+        """
         layer_name, image = self._get_image()
         if image is None:
             return
 
+        mode = self._n2v_mode.currentText()
+        is_3d = mode == "3D"
+
         if image.ndim == 2:
+            # Single 2D image — always 2D mode
             frame_image = image
             frame_idx = None
         elif image.ndim == 3:
+            if is_3d:
+                # 3D mode: treat entire stack as a single volume
+                frame_image = image
+                frame_idx = None
+            else:
+                # 2D mode: extract current frame
+                frame_idx = int(self.viewer.dims.current_step[0])
+                frame_image = image[frame_idx]
+        elif image.ndim == 4:
+            # T,Z,Y,X — extract current time point
             frame_idx = int(self.viewer.dims.current_step[0])
-            frame_image = image[frame_idx]
+            frame_image = image[frame_idx]  # gives Z,Y,X volume
+            if not is_3d:
+                # 2D mode on 4D: take middle Z slice
+                z_idx = frame_image.shape[0] // 2
+                frame_image = frame_image[z_idx]
+                frame_idx = (frame_idx, z_idx)
         else:
-            show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
+            show_error(f"Unsupported image dimensions: {image.ndim}D.")
             return
 
         model_path = self._n2v_model_path.text()
@@ -330,7 +356,7 @@ class PreProcessingWidget(QWidget):
             model_path=model_path,
             n_epochs=self._n2v_epochs.value(),
             patch_size=self._n2v_patch.value(),
-            mode="2D",  # preview always runs on a single 2D frame
+            mode=mode,
         )
         self._n2v_worker.progress.connect(self._on_n2v_progress)
         self._n2v_worker.finished.connect(self._on_n2v_finished)
