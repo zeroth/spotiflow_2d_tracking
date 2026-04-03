@@ -129,14 +129,21 @@ def predict_n2v(
     image: np.ndarray,
     patch_size: int = 64,
     mode: str = "2D",
+    batch_frames: int = 50,
 ) -> np.ndarray:
     """Run N2V prediction on the full image/stack.
+
+    For large 2D stacks, processes in batches of `batch_frames` to avoid OOM.
 
     Returns denoised array with same shape as input.
     """
     is_3d = mode.upper() == "3D"
-    tile_size, tile_overlap, axes = _get_prediction_params(image, patch_size, is_3d)
 
+    # For large 2D stacks, process in batches to avoid OOM
+    if not is_3d and image.ndim == 3 and image.shape[0] > batch_frames:
+        return _predict_batched(careamist, image, patch_size, batch_frames)
+
+    tile_size, tile_overlap, axes = _get_prediction_params(image, patch_size, is_3d)
     print(f"Predicting — shape={image.shape}, tile_size={tile_size}, axes={axes}")
 
     pred_kwargs = dict(
@@ -154,6 +161,41 @@ def predict_n2v(
     if isinstance(prediction, list):
         prediction = prediction[0]
     return np.squeeze(np.asarray(prediction))
+
+
+def _predict_batched(
+    careamist, image: np.ndarray, patch_size: int, batch_frames: int
+) -> np.ndarray:
+    """Predict on a large 2D stack in batches to avoid OOM."""
+    import gc
+
+    n_frames = image.shape[0]
+    tile_size = (patch_size, patch_size)
+    tile_overlap = (patch_size // 4, patch_size // 4)
+    result = np.empty_like(image, dtype=np.float32)
+
+    for start in range(0, n_frames, batch_frames):
+        end = min(start + batch_frames, n_frames)
+        batch = image[start:end]
+        print(f"Predicting frames {start}-{end-1} of {n_frames}...")
+
+        pred = careamist.predict(
+            source=batch.astype(np.float32),
+            data_type="array",
+            axes="SYX",
+            dataloader_params={"num_workers": 0},
+            tile_size=tile_size,
+            tile_overlap=tile_overlap,
+        )
+        if isinstance(pred, list):
+            pred = pred[0]
+        result[start:end] = np.squeeze(np.asarray(pred))
+
+        # Free memory between batches
+        del pred
+        gc.collect()
+
+    return result
 
 
 def _pad_to_divisible(image: np.ndarray, divisor: int = 16) -> np.ndarray:
@@ -220,6 +262,11 @@ def main():
         "--batch-size", type=int, default=1,
         help="Batch size for training (default: 1)",
     )
+    parser.add_argument(
+        "--batch-frames", type=int, default=50,
+        help="Number of frames to predict at once to avoid OOM (default: 50). "
+             "Lower this if you run out of memory during prediction.",
+    )
 
     args = parser.parse_args()
 
@@ -268,12 +315,13 @@ def main():
         careamist, image,
         patch_size=args.patch_size,
         mode=args.mode,
+        batch_frames=args.batch_frames,
     )
     pred_time = time.perf_counter() - t1
     print(f"Prediction complete in {pred_time:.1f}s")
 
     # ── Save output ───────────────────────────────────────────────────
-    tifffile.imwrite(args.output, denoised.astype(image.dtype))
+    tifffile.imwrite(args.output, denoised.astype(image.dtype), bigtiff=True)
     print(f"Saved: {args.output}")
     print(f"Total time: {time.perf_counter() - t0:.1f}s")
 
