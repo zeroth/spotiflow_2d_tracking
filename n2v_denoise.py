@@ -177,7 +177,7 @@ def save_model(careamist, save_path: str, input_image: np.ndarray, input_name: s
             path_to_archive=save_path,
             friendly_model_name="N2V Denoised Model",
             input_array=ref,
-            authors=["CellphyLab"],
+            authors=[{"name": "CellphyLab"}],
             general_description="Noise2Void denoising model trained with CAREamics",
             data_description=f"Trained on {input_name}",
         )
