@@ -191,6 +191,7 @@ def denoise_n2v(
     patch_size: int = 64,
     mode: str = "2D",
     train_frames: int | None = None,
+    predict_image: np.ndarray | None = None,
 ) -> np.ndarray:
     """Denoise an image using Noise2Void (CAREamics).
 
@@ -199,6 +200,7 @@ def denoise_n2v(
 
     Args:
         image: 2D image (Y, X) or 3D stack (T, Y, X) / volume (Z, Y, X).
+               Used for training (and prediction if predict_image is None).
         model_path: path to a pretrained CAREamics model (.zip or .ckpt).
                     If None, trains a new model on the input data.
         n_epochs: number of training epochs (only used when training).
@@ -208,6 +210,8 @@ def denoise_n2v(
               3D: stack is treated as a single volume (axes=ZYX).
         train_frames: number of evenly spaced frames to train on.
                       None or 0 = use all frames. Useful for large stacks.
+        predict_image: if provided, train on `image` but predict on this array.
+                       Useful for preview (train on one frame, predict on another).
 
     Returns:
         Denoised image with same shape as input.
@@ -253,12 +257,15 @@ def denoise_n2v(
         careamist = CAREamist(config)
         careamist.train(train_source=train_data.astype(np.float32))
 
+    # Use predict_image if provided, otherwise predict on training image
+    pred_img = predict_image if predict_image is not None else image
+
     # Tiling for prediction — overlap must be >= half the tile size
     # to avoid boundary artifacts from the UNet's receptive field
-    if is_3d and image.ndim == 3:
-        tile_size = (min(patch_size, image.shape[0]), patch_size, patch_size)
+    if is_3d and pred_img.ndim == 3:
+        tile_size = (min(patch_size, pred_img.shape[0]), patch_size, patch_size)
         tile_overlap = (
-            min(patch_size // 2, image.shape[0] // 2),
+            min(patch_size // 2, pred_img.shape[0] // 2),
             patch_size // 2,
             patch_size // 2,
         )
@@ -267,15 +274,15 @@ def denoise_n2v(
         tile_overlap = (patch_size // 2, patch_size // 2)
 
     pred_kwargs = dict(
-        source=image.astype(np.float32),
+        source=pred_img.astype(np.float32),
         data_type="array",
         dataloader_params={"num_workers": 0},
         tile_size=tile_size,
         tile_overlap=tile_overlap,
     )
-    if image.ndim == 2:
+    if pred_img.ndim == 2:
         pred_kwargs["axes"] = "YX"
-    elif image.ndim == 3:
+    elif pred_img.ndim == 3:
         pred_kwargs["axes"] = "ZYX" if is_3d else "SYX"
 
     prediction = careamist.predict(**pred_kwargs)
@@ -286,8 +293,8 @@ def denoise_n2v(
     else:
         prediction = np.squeeze(np.asarray(prediction))
 
-    # If input was 2D, squeeze out any extra dims
-    if image.ndim == 2:
+    # If prediction input was 2D, squeeze out any extra dims
+    if pred_img.ndim == 2:
         prediction = np.squeeze(prediction)
 
     return prediction

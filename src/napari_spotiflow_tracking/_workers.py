@@ -127,7 +127,7 @@ class DetectionWorker(QThread):
             self.errored.emit(traceback.format_exc())
 
 
-def _n2v_subprocess(image, model_path, n_epochs, patch_size, mode, train_frames, result_file, error_queue):
+def _n2v_subprocess(image, model_path, n_epochs, patch_size, mode, train_frames, predict_image, result_file, error_queue):
     """Run N2V in a separate process (cleanly killable).
 
     Writes result to a .npy temp file to avoid Queue size limits.
@@ -136,7 +136,8 @@ def _n2v_subprocess(image, model_path, n_epochs, patch_size, mode, train_frames,
         from napari_spotiflow_tracking._preprocessing import denoise_n2v
         result = denoise_n2v(image, model_path=model_path,
                              n_epochs=n_epochs, patch_size=patch_size,
-                             mode=mode, train_frames=train_frames)
+                             mode=mode, train_frames=train_frames,
+                             predict_image=predict_image)
         np.save(result_file, result)
         error_queue.put(("ok", None))
     except ImportError:
@@ -166,6 +167,7 @@ class N2VWorker(QThread):
         patch_size: int = 64,
         mode: str = "2D",
         train_frames: int | None = None,
+        predict_image: np.ndarray | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -175,6 +177,7 @@ class N2VWorker(QThread):
         self._patch_size = patch_size
         self._mode = mode
         self._train_frames = train_frames
+        self._predict_image = predict_image
         self._process = None
 
     def run(self):
@@ -197,7 +200,7 @@ class N2VWorker(QThread):
             target=_n2v_subprocess,
             args=(self._image, self._model_path, self._n_epochs,
                   self._patch_size, self._mode, self._train_frames,
-                  result_file, error_queue),
+                  self._predict_image, result_file, error_queue),
         )
         self._process.start()
         self._process.join()

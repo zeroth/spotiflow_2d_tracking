@@ -329,27 +329,40 @@ class PreProcessingWidget(QWidget):
         is_3d = mode == "3D"
 
         if image.ndim == 2:
-            # Single 2D image — always 2D mode
-            frame_image = image
+            # Single 2D image — train and predict on same image
+            train_image = image
+            predict_frame = image
             frame_idx = None
         elif image.ndim == 3:
             if is_3d:
                 # 3D mode: treat entire stack as a single volume
-                frame_image = image
+                train_image = image
+                predict_frame = image
                 frame_idx = None
             else:
-                # 2D mode: extract current frame
+                # 2D mode: train on a different frame, predict on current
                 frame_idx = int(self.viewer.dims.current_step[0])
-                frame_image = image[frame_idx]
+                predict_frame = image[frame_idx]
+                # Pick a different frame for training (furthest from current)
+                n = image.shape[0]
+                train_idx = (frame_idx + n // 2) % n
+                train_image = image[train_idx]
+                show_info(f"Training on frame {train_idx}, predicting on frame {frame_idx}")
         elif image.ndim == 4:
             # T,Z,Y,X — extract current time point
             frame_idx = int(self.viewer.dims.current_step[0])
-            frame_image = image[frame_idx]  # gives Z,Y,X volume
-            if not is_3d:
+            n = image.shape[0]
+            train_t = (frame_idx + n // 2) % n
+            if is_3d:
+                predict_frame = image[frame_idx]  # Z,Y,X
+                train_image = image[train_t]
+            else:
                 # 2D mode on 4D: take middle Z slice
                 z_idx = frame_image.shape[0] // 2
-                frame_image = frame_image[z_idx]
+                predict_frame = image[frame_idx, z_idx]
+                train_image = image[train_t, z_idx]
                 frame_idx = (frame_idx, z_idx)
+            show_info(f"Training on t={train_t}, predicting on t={frame_idx}")
         else:
             show_error(f"Unsupported image dimensions: {image.ndim}D.")
             return
@@ -366,11 +379,12 @@ class PreProcessingWidget(QWidget):
         self._pbr = progress(total=0, desc=f"N2V preview{suffix}")
 
         self._n2v_worker = N2VWorker(
-            image=frame_image,
+            image=train_image,
             model_path=model_path,
             n_epochs=self._n2v_epochs.value(),
             patch_size=self._n2v_patch.value(),
             mode=mode,
+            predict_image=predict_frame,
         )
         self._n2v_worker.progress.connect(self._on_n2v_progress)
         self._n2v_worker.finished.connect(self._on_n2v_finished)
