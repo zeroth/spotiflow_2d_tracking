@@ -156,10 +156,23 @@ def predict_n2v(
     return np.squeeze(np.asarray(prediction))
 
 
+def _pad_to_divisible(image: np.ndarray, divisor: int = 16) -> np.ndarray:
+    """Pad spatial dimensions to be divisible by divisor (for UNet compatibility)."""
+    pad_widths = []
+    for i, s in enumerate(image.shape):
+        if i >= image.ndim - 2:  # only pad Y, X (last 2 dims)
+            remainder = s % divisor
+            pad_widths.append((0, (divisor - remainder) % divisor))
+        else:
+            pad_widths.append((0, 0))
+    return np.pad(image, pad_widths, mode="reflect")
+
+
 def save_model(careamist, save_path: str, input_image: np.ndarray, input_name: str):
     """Save trained model to BioImage Model Zoo format."""
     try:
         ref = input_image[:1] if input_image.ndim >= 3 else input_image
+        ref = _pad_to_divisible(ref)
         careamist.export_to_bmz(
             path_to_archive=save_path,
             friendly_model_name="N2V Denoised Model",
