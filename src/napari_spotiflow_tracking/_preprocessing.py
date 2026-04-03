@@ -280,8 +280,16 @@ def denoise_n2v(
     prediction = careamist.predict(**pred_kwargs)
 
     if isinstance(prediction, list):
-        prediction = prediction[0]
-    return np.squeeze(np.asarray(prediction))
+        # CAREamics returns a list of arrays (one per sample for SYX)
+        prediction = np.stack([np.squeeze(p) for p in prediction], axis=0)
+    else:
+        prediction = np.squeeze(np.asarray(prediction))
+
+    # If input was 2D, squeeze out any extra dims
+    if image.ndim == 2:
+        prediction = np.squeeze(prediction)
+
+    return prediction
 
 
 # ── Walking average ──────────────────────────────────────────────────

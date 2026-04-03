@@ -159,8 +159,14 @@ def predict_n2v(
     prediction = careamist.predict(**pred_kwargs)
 
     if isinstance(prediction, list):
-        prediction = prediction[0]
-    return np.squeeze(np.asarray(prediction))
+        prediction = np.stack([np.squeeze(p) for p in prediction], axis=0)
+    else:
+        prediction = np.squeeze(np.asarray(prediction))
+
+    if image.ndim == 2:
+        prediction = np.squeeze(prediction)
+
+    return prediction
 
 
 def _predict_batched(
@@ -188,8 +194,10 @@ def _predict_batched(
             tile_overlap=tile_overlap,
         )
         if isinstance(pred, list):
-            pred = pred[0]
-        result[start:end] = np.squeeze(np.asarray(pred))
+            pred = np.stack([np.squeeze(p) for p in pred], axis=0)
+        else:
+            pred = np.squeeze(np.asarray(pred))
+        result[start:end] = pred
 
         del pred, batch
         gc.collect()
@@ -247,8 +255,11 @@ def predict_and_save(
                 tile_overlap=tile_overlap,
             )
             if isinstance(pred, list):
-                pred = pred[0]
-            result_batch = np.squeeze(np.asarray(pred)).astype(output_dtype)
+                result_batch = np.stack(
+                    [np.squeeze(p) for p in pred], axis=0
+                ).astype(output_dtype)
+            else:
+                result_batch = np.squeeze(np.asarray(pred)).astype(output_dtype)
 
             # Write each frame individually
             for f in range(result_batch.shape[0]):
