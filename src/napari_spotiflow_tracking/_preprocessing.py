@@ -253,17 +253,18 @@ def denoise_n2v(
         careamist = CAREamist(config)
         careamist.train(train_source=train_data.astype(np.float32))
 
-    # Tiling for prediction
+    # Tiling for prediction — overlap must be >= half the tile size
+    # to avoid boundary artifacts from the UNet's receptive field
     if is_3d and image.ndim == 3:
         tile_size = (min(patch_size, image.shape[0]), patch_size, patch_size)
         tile_overlap = (
-            min(patch_size // 4, image.shape[0] // 2),
-            patch_size // 4,
-            patch_size // 4,
+            min(patch_size // 2, image.shape[0] // 2),
+            patch_size // 2,
+            patch_size // 2,
         )
     else:
         tile_size = (patch_size, patch_size)
-        tile_overlap = (patch_size // 4, patch_size // 4)
+        tile_overlap = (patch_size // 2, patch_size // 2)
 
     pred_kwargs = dict(
         source=image.astype(np.float32),

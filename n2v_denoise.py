@@ -54,13 +54,13 @@ def _get_prediction_params(image, patch_size, is_3d):
         z_dim = image.shape[-3]
         tile_size = (min(patch_size, z_dim), patch_size, patch_size)
         tile_overlap = (
-            min(patch_size // 4, max(z_dim // 2, 1)),
-            patch_size // 4,
-            patch_size // 4,
+            min(patch_size // 2, max(z_dim // 2, 1)),
+            patch_size // 2,
+            patch_size // 2,
         )
     else:
         tile_size = (patch_size, patch_size)
-        tile_overlap = (patch_size // 4, patch_size // 4)
+        tile_overlap = (patch_size // 2, patch_size // 2)
 
     if image.ndim == 2:
         axes = "YX"
@@ -177,7 +177,7 @@ def _predict_batched(
 
     n_frames = image.shape[0]
     tile_size = (patch_size, patch_size)
-    tile_overlap = (patch_size // 4, patch_size // 4)
+    tile_overlap = (patch_size // 2, patch_size // 2)
     result = np.empty_like(image, dtype=np.float32)
 
     for start in range(0, n_frames, batch_frames):
@@ -235,7 +235,7 @@ def predict_and_save(
     # Large 2D stacks: stream batches to disk
     n_frames = image.shape[0]
     tile_size = (patch_size, patch_size)
-    tile_overlap = (patch_size // 4, patch_size // 4)
+    tile_overlap = (patch_size // 2, patch_size // 2)
 
     print(f"Streaming prediction to {output_path} ({n_frames} frames, "
           f"{batch_frames} per batch)...")
