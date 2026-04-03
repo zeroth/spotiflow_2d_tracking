@@ -174,12 +174,23 @@ def remove_background_erosion(
 # ── Noise2Void denoising ─────────────────────────────────────────────
 
 
+def _select_train_frames(image: np.ndarray, n_frames: int) -> np.ndarray:
+    """Select n_frames evenly spaced frames from a stack for training."""
+    total = image.shape[0]
+    if n_frames >= total:
+        return image
+    indices = np.linspace(0, total - 1, n_frames, dtype=int)
+    indices = list(dict.fromkeys(indices))
+    return image[indices]
+
+
 def denoise_n2v(
     image: np.ndarray,
     model_path: str | None = None,
     n_epochs: int = 100,
     patch_size: int = 64,
     mode: str = "2D",
+    train_frames: int | None = None,
 ) -> np.ndarray:
     """Denoise an image using Noise2Void (CAREamics).
 
@@ -195,6 +206,8 @@ def denoise_n2v(
         mode: '2D' or '3D'.
               2D: for stacks, each frame is an independent sample (axes=SYX).
               3D: stack is treated as a single volume (axes=ZYX).
+        train_frames: number of evenly spaced frames to train on.
+                      None or 0 = use all frames. Useful for large stacks.
 
     Returns:
         Denoised image with same shape as input.
@@ -207,17 +220,23 @@ def denoise_n2v(
     if model_path is not None:
         careamist = CAREamist(model_path)
     else:
-        # Determine axes
-        if image.ndim == 2:
+        # Select training subset if requested
+        if train_frames and train_frames > 0 and image.ndim >= 3:
+            train_data = _select_train_frames(image, train_frames)
+        else:
+            train_data = image
+
+        # Determine axes from training data shape
+        if train_data.ndim == 2:
             axes = "YX"
-        elif image.ndim == 3:
+        elif train_data.ndim == 3:
             axes = "ZYX" if is_3d else "SYX"
         else:
-            raise ValueError(f"Expected 2D or 3D image, got {image.ndim}D")
+            raise ValueError(f"Expected 2D or 3D image, got {train_data.ndim}D")
 
         # Patch size: 3D needs a Z patch dimension
-        if is_3d and image.ndim == 3:
-            ps = [min(patch_size, image.shape[0]), patch_size, patch_size]
+        if is_3d and train_data.ndim == 3:
+            ps = [min(patch_size, train_data.shape[0]), patch_size, patch_size]
         else:
             ps = [patch_size, patch_size]
 
@@ -232,7 +251,7 @@ def denoise_n2v(
             val_dataloader_params={"num_workers": 0},
         )
         careamist = CAREamist(config)
-        careamist.train(train_source=image.astype(np.float32))
+        careamist.train(train_source=train_data.astype(np.float32))
 
     # Tiling for prediction
     if is_3d and image.ndim == 3:

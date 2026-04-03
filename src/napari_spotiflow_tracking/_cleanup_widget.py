@@ -160,6 +160,20 @@ class PreProcessingWidget(QWidget):
         train_row.addWidget(self._n2v_patch)
         n2v_layout.addLayout(train_row)
 
+        # Train frames subset
+        frames_row = QHBoxLayout()
+        frames_row.addWidget(QLabel("Train frames:"))
+        self._n2v_train_frames = QSpinBox()
+        self._n2v_train_frames.setRange(0, 10000)
+        self._n2v_train_frames.setValue(0)
+        self._n2v_train_frames.setSpecialValueText("All")
+        self._n2v_train_frames.setToolTip(
+            "Number of evenly spaced frames to train on (0 = all). "
+            "Use 2-5 for fast training on large stacks."
+        )
+        frames_row.addWidget(self._n2v_train_frames)
+        n2v_layout.addLayout(frames_row)
+
         n2v_btn_row = QHBoxLayout()
         self._n2v_btn = QPushButton("Denoise (N2V)")
         self._n2v_btn.clicked.connect(self._run_n2v)
@@ -382,12 +396,14 @@ class PreProcessingWidget(QWidget):
         self._n2v_cancel_btn.setEnabled(True)
         self._pbr = progress(total=0, desc="N2V denoising")
 
+        train_frames = self._n2v_train_frames.value() or None
         self._n2v_worker = N2VWorker(
             image=image,
             model_path=model_path,
             n_epochs=self._n2v_epochs.value(),
             patch_size=self._n2v_patch.value(),
             mode=self._n2v_mode.currentText(),
+            train_frames=train_frames,
         )
         self._n2v_worker.progress.connect(self._on_n2v_progress)
         self._n2v_worker.finished.connect(self._on_n2v_finished)
