@@ -3,99 +3,58 @@
 No dependencies on the napari plugin. Requires: careamics, tifffile, numpy.
 
 Usage:
-    # Train from scratch and denoise (2D mode, T,Y,X stack)
+    # Train on 3 evenly spaced frames, predict on entire 600-frame stack
+    python n2v_denoise.py input.tif output.tif --epochs 100 --train-frames 3
+
+    # Train on all frames (default)
     python n2v_denoise.py input.tif output.tif --epochs 100
 
     # 3D mode (Z,Y,X volume)
     python n2v_denoise.py input.tif output.tif --mode 3D --epochs 50
 
-    # Use a pretrained model
+    # Use a pretrained model (skip training entirely)
     python n2v_denoise.py input.tif output.tif --model path/to/model.zip
 
     # Adjust patch size and batch size
     python n2v_denoise.py input.tif output.tif --epochs 200 --patch-size 128 --batch-size 4
-
-    # Save the trained model for reuse
-    python n2v_denoise.py input.tif output.tif --epochs 100 --save-model model_output.zip
 """
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import sys
 import time
 
 import numpy as np
 
 
-def denoise_n2v(
-    image: np.ndarray,
-    model_path: str | None = None,
-    n_epochs: int = 100,
-    patch_size: int = 64,
-    batch_size: int = 1,
-    mode: str = "2D",
-) -> tuple[np.ndarray, object]:
-    """Denoise an image using Noise2Void (CAREamics).
+def _select_train_frames(image: np.ndarray, n_frames: int) -> np.ndarray:
+    """Select n_frames evenly spaced frames from a stack for training.
 
     Args:
-        image: 2D (Y,X), 3D (T,Y,X or Z,Y,X), or 4D (T,Z,Y,X) array.
-        model_path: path to pretrained model (.zip or .ckpt). None = train from scratch.
-        n_epochs: training epochs (ignored if model_path is set).
-        patch_size: spatial patch size for training and tiled prediction.
-        batch_size: batch size for training.
-        mode: '2D' or '3D'.
+        image: 3D+ array where axis 0 is the time/sample dimension.
+        n_frames: number of frames to select.
 
     Returns:
-        (denoised_image, careamist) — the denoised array and trained model object.
+        Subset array with shape (n_frames, ...).
     """
-    from careamics import CAREamist
-    from careamics.config import create_n2v_configuration
+    total = image.shape[0]
+    if n_frames >= total:
+        return image
+    indices = np.linspace(0, total - 1, n_frames, dtype=int)
+    # Remove duplicates while preserving order
+    indices = list(dict.fromkeys(indices))
+    print(f"Selected {len(indices)} training frames: {indices}")
+    return image[indices]
 
-    is_3d = mode.upper() == "3D"
 
-    if model_path is not None:
-        print(f"Loading pretrained model: {model_path}")
-        careamist = CAREamist(model_path)
-    else:
-        # Determine axes
-        if image.ndim == 2:
-            axes = "YX"
-        elif image.ndim == 3:
-            axes = "ZYX" if is_3d else "SYX"
-        elif image.ndim == 4:
-            axes = "SZYX" if is_3d else "STYX"
-        else:
-            raise ValueError(f"Unsupported image dimensions: {image.ndim}D")
-
-        print(f"Training N2V model — mode={mode}, axes={axes}, "
-              f"epochs={n_epochs}, patch_size={patch_size}, batch_size={batch_size}")
-
-        # Patch size
-        if is_3d and image.ndim >= 3:
-            z_dim = image.shape[-3] if image.ndim >= 3 else image.shape[0]
-            ps = [min(patch_size, z_dim), patch_size, patch_size]
-        else:
-            ps = [patch_size, patch_size]
-
-        config = create_n2v_configuration(
-            experiment_name="n2v_denoise",
-            data_type="array",
-            axes=axes,
-            patch_size=ps,
-            batch_size=batch_size,
-            num_epochs=n_epochs,
-            train_dataloader_params={"shuffle": True, "num_workers": 0},
-            val_dataloader_params={"num_workers": 0},
-        )
-        careamist = CAREamist(config)
-        careamist.train(train_source=image.astype(np.float32))
-
-    # Tiling for prediction
+def _get_prediction_params(image, patch_size, is_3d):
+    """Compute tile_size, tile_overlap, and axes for prediction."""
     if is_3d and image.ndim >= 3:
         z_dim = image.shape[-3]
         tile_size = (min(patch_size, z_dim), patch_size, patch_size)
         tile_overlap = (
-            min(patch_size // 4, z_dim // 2),
+            min(patch_size // 4, max(z_dim // 2, 1)),
             patch_size // 4,
             patch_size // 4,
         )
@@ -103,17 +62,82 @@ def denoise_n2v(
         tile_size = (patch_size, patch_size)
         tile_overlap = (patch_size // 4, patch_size // 4)
 
-    # Determine prediction axes
     if image.ndim == 2:
-        pred_axes = "YX"
+        axes = "YX"
     elif image.ndim == 3:
-        pred_axes = "ZYX" if is_3d else "SYX"
+        axes = "ZYX" if is_3d else "SYX"
     elif image.ndim == 4:
-        pred_axes = "SZYX" if is_3d else "STYX"
+        axes = "SZYX" if is_3d else "STYX"
     else:
-        pred_axes = None
+        axes = None
 
-    print(f"Predicting with tile_size={tile_size}, tile_overlap={tile_overlap}")
+    return tile_size, tile_overlap, axes
+
+
+def train_n2v(
+    train_data: np.ndarray,
+    n_epochs: int = 100,
+    patch_size: int = 64,
+    batch_size: int = 1,
+    mode: str = "2D",
+):
+    """Train a N2V model on the given data.
+
+    Returns the trained CAREamist instance.
+    """
+    from careamics import CAREamist
+    from careamics.config import create_n2v_configuration
+
+    is_3d = mode.upper() == "3D"
+
+    if train_data.ndim == 2:
+        axes = "YX"
+    elif train_data.ndim == 3:
+        axes = "ZYX" if is_3d else "SYX"
+    elif train_data.ndim == 4:
+        axes = "SZYX" if is_3d else "STYX"
+    else:
+        raise ValueError(f"Unsupported data dimensions: {train_data.ndim}D")
+
+    if is_3d and train_data.ndim >= 3:
+        z_dim = train_data.shape[-3]
+        ps = [min(patch_size, z_dim), patch_size, patch_size]
+    else:
+        ps = [patch_size, patch_size]
+
+    print(f"Training N2V — mode={mode}, axes={axes}, "
+          f"shape={train_data.shape}, epochs={n_epochs}, "
+          f"patch_size={ps}, batch_size={batch_size}")
+
+    config = create_n2v_configuration(
+        experiment_name="n2v_denoise",
+        data_type="array",
+        axes=axes,
+        patch_size=ps,
+        batch_size=batch_size,
+        num_epochs=n_epochs,
+        train_dataloader_params={"shuffle": True, "num_workers": 0},
+        val_dataloader_params={"num_workers": 0},
+    )
+    careamist = CAREamist(config)
+    careamist.train(train_source=train_data.astype(np.float32))
+    return careamist
+
+
+def predict_n2v(
+    careamist,
+    image: np.ndarray,
+    patch_size: int = 64,
+    mode: str = "2D",
+) -> np.ndarray:
+    """Run N2V prediction on the full image/stack.
+
+    Returns denoised array with same shape as input.
+    """
+    is_3d = mode.upper() == "3D"
+    tile_size, tile_overlap, axes = _get_prediction_params(image, patch_size, is_3d)
+
+    print(f"Predicting — shape={image.shape}, tile_size={tile_size}, axes={axes}")
 
     pred_kwargs = dict(
         source=image.astype(np.float32),
@@ -122,15 +146,31 @@ def denoise_n2v(
         tile_size=tile_size,
         tile_overlap=tile_overlap,
     )
-    if pred_axes is not None:
-        pred_kwargs["axes"] = pred_axes
+    if axes is not None:
+        pred_kwargs["axes"] = axes
 
     prediction = careamist.predict(**pred_kwargs)
 
     if isinstance(prediction, list):
         prediction = prediction[0]
+    return np.squeeze(np.asarray(prediction))
 
-    return np.squeeze(np.asarray(prediction)), careamist
+
+def save_model(careamist, save_path: str, input_image: np.ndarray, input_name: str):
+    """Save trained model to BioImage Model Zoo format."""
+    try:
+        ref = input_image[:1] if input_image.ndim >= 3 else input_image
+        careamist.export_to_bmz(
+            path_to_archive=save_path,
+            friendly_model_name="N2V Denoised Model",
+            input_array=ref,
+            authors=["CellphyLab"],
+            general_description="Noise2Void denoising model trained with CAREamics",
+            data_description=f"Trained on {input_name}",
+        )
+        print(f"Model saved: {save_path}")
+    except Exception as e:
+        print(f"Warning: could not save model: {e}", file=sys.stderr)
 
 
 def main():
@@ -144,11 +184,7 @@ def main():
     parser.add_argument(
         "--model", default=None,
         help="Path to pretrained CAREamics model (.zip or .ckpt). "
-             "If not provided, trains a new model on the input data.",
-    )
-    parser.add_argument(
-        "--save-model", default=None, metavar="PATH",
-        help="Save the trained model to this path (BioImage Model Zoo .zip format)",
+             "Skips training and goes straight to prediction.",
     )
     parser.add_argument(
         "--mode", choices=["2D", "3D"], default="2D",
@@ -157,6 +193,11 @@ def main():
     parser.add_argument(
         "--epochs", type=int, default=100,
         help="Number of training epochs (default: 100)",
+    )
+    parser.add_argument(
+        "--train-frames", type=int, default=None, metavar="N",
+        help="Number of evenly spaced frames to train on (default: all frames). "
+             "E.g. --train-frames 3 selects 3 frames spread across the stack.",
     )
     parser.add_argument(
         "--patch-size", type=int, default=64,
@@ -169,43 +210,59 @@ def main():
 
     args = parser.parse_args()
 
-    # Load image
     import tifffile
+
+    # ── Load ──────────────────────────────────────────────────────────
     print(f"Loading: {args.input}")
     image = tifffile.imread(args.input)
     print(f"Image shape: {image.shape}, dtype: {image.dtype}")
 
-    # Denoise
     t0 = time.perf_counter()
-    denoised, careamist = denoise_n2v(
-        image,
-        model_path=args.model,
-        n_epochs=args.epochs,
+
+    # ── Train or load model ───────────────────────────────────────────
+    if args.model is not None:
+        from careamics import CAREamist
+        print(f"Loading pretrained model: {args.model}")
+        careamist = CAREamist(args.model)
+    else:
+        # Select training subset
+        if args.train_frames is not None and image.ndim >= 3:
+            train_data = _select_train_frames(image, args.train_frames)
+        else:
+            train_data = image
+
+        careamist = train_n2v(
+            train_data,
+            n_epochs=args.epochs,
+            patch_size=args.patch_size,
+            batch_size=args.batch_size,
+            mode=args.mode,
+        )
+
+        # Auto-save model next to input file
+        input_path = Path(args.input)
+        n_train = args.train_frames if args.train_frames else image.shape[0] if image.ndim >= 3 else 1
+        model_name = f"{input_path.stem}_n2v_{n_train}frames.zip"
+        model_save_path = str(input_path.parent / model_name)
+        save_model(careamist, model_save_path, image, args.input)
+
+    train_time = time.perf_counter() - t0
+    print(f"Training/loading complete in {train_time:.1f}s")
+
+    # ── Predict on full stack ─────────────────────────────────────────
+    t1 = time.perf_counter()
+    denoised = predict_n2v(
+        careamist, image,
         patch_size=args.patch_size,
-        batch_size=args.batch_size,
         mode=args.mode,
     )
-    elapsed = time.perf_counter() - t0
-    print(f"Denoising complete in {elapsed:.1f}s")
+    pred_time = time.perf_counter() - t1
+    print(f"Prediction complete in {pred_time:.1f}s")
 
-    # Save output
+    # ── Save output ───────────────────────────────────────────────────
     tifffile.imwrite(args.output, denoised.astype(image.dtype))
     print(f"Saved: {args.output}")
-
-    # Save model if requested
-    if args.save_model:
-        try:
-            careamist.export_to_bmz(
-                path_to_archive=args.save_model,
-                friendly_model_name="N2V Denoised Model",
-                input_array=image[:1] if image.ndim >= 3 else image,
-                authors=["CellphyLab"],
-                general_description="Noise2Void denoising model trained with CAREamics",
-                data_description=f"Trained on {args.input}",
-            )
-            print(f"Model saved: {args.save_model}")
-        except Exception as e:
-            print(f"Warning: could not save model: {e}", file=sys.stderr)
+    print(f"Total time: {time.perf_counter() - t0:.1f}s")
 
 
 if __name__ == "__main__":
