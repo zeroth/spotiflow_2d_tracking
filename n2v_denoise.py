@@ -191,11 +191,73 @@ def _predict_batched(
             pred = pred[0]
         result[start:end] = np.squeeze(np.asarray(pred))
 
-        # Free memory between batches
-        del pred
+        del pred, batch
         gc.collect()
 
     return result
+
+
+def predict_and_save(
+    careamist,
+    image: np.ndarray,
+    output_path: str,
+    patch_size: int = 64,
+    mode: str = "2D",
+    batch_frames: int = 50,
+    output_dtype=None,
+):
+    """Predict and stream results to disk to minimize peak memory.
+
+    For large 2D stacks, writes each batch directly to a BigTIFF file
+    instead of holding the full result in memory.
+    """
+    import gc
+    import tifffile
+
+    is_3d = mode.upper() == "3D"
+    if output_dtype is None:
+        output_dtype = image.dtype
+
+    # Small images or 3D: predict all at once, write at once
+    if is_3d or image.ndim <= 2 or image.shape[0] <= batch_frames:
+        denoised = predict_n2v(careamist, image, patch_size, mode, batch_frames)
+        tifffile.imwrite(output_path, denoised.astype(output_dtype), bigtiff=True)
+        return
+
+    # Large 2D stacks: stream batches to disk
+    n_frames = image.shape[0]
+    tile_size = (patch_size, patch_size)
+    tile_overlap = (patch_size // 4, patch_size // 4)
+
+    print(f"Streaming prediction to {output_path} ({n_frames} frames, "
+          f"{batch_frames} per batch)...")
+
+    with tifffile.TiffWriter(output_path, bigtiff=True) as tif:
+        for start in range(0, n_frames, batch_frames):
+            end = min(start + batch_frames, n_frames)
+            batch = image[start:end]
+            print(f"  Frames {start}-{end-1} / {n_frames}...")
+
+            pred = careamist.predict(
+                source=batch.astype(np.float32),
+                data_type="array",
+                axes="SYX",
+                dataloader_params={"num_workers": 0},
+                tile_size=tile_size,
+                tile_overlap=tile_overlap,
+            )
+            if isinstance(pred, list):
+                pred = pred[0]
+            result_batch = np.squeeze(np.asarray(pred)).astype(output_dtype)
+
+            # Write each frame individually
+            for f in range(result_batch.shape[0]):
+                tif.write(result_batch[f])
+
+            del pred, batch, result_batch
+            gc.collect()
+
+    print(f"All {n_frames} frames written to {output_path}")
 
 
 def _pad_to_divisible(image: np.ndarray, divisor: int = 16) -> np.ndarray:
@@ -309,20 +371,18 @@ def main():
     train_time = time.perf_counter() - t0
     print(f"Training/loading complete in {train_time:.1f}s")
 
-    # ── Predict on full stack ─────────────────────────────────────────
+    # ── Predict and save (streaming for large stacks) ──────────────────
     t1 = time.perf_counter()
-    denoised = predict_n2v(
+    predict_and_save(
         careamist, image,
+        output_path=args.output,
         patch_size=args.patch_size,
         mode=args.mode,
         batch_frames=args.batch_frames,
+        output_dtype=image.dtype,
     )
     pred_time = time.perf_counter() - t1
-    print(f"Prediction complete in {pred_time:.1f}s")
-
-    # ── Save output ───────────────────────────────────────────────────
-    tifffile.imwrite(args.output, denoised.astype(image.dtype), bigtiff=True)
-    print(f"Saved: {args.output}")
+    print(f"Prediction + save complete in {pred_time:.1f}s")
     print(f"Total time: {time.perf_counter() - t0:.1f}s")
 
 
