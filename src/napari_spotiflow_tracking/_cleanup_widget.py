@@ -193,6 +193,26 @@ class PreProcessingWidget(QWidget):
         n2v_group.setLayout(n2v_layout)
         layout.addWidget(n2v_group)
 
+        # ── Gaussian Blur ─────────────────────────────────────────────
+        blur_group = QGroupBox("Gaussian Blur")
+        blur_layout = QVBoxLayout()
+
+        blur_sigma_row = QHBoxLayout()
+        blur_sigma_row.addWidget(QLabel("Sigma:"))
+        self._blur_sigma = QDoubleSpinBox()
+        self._blur_sigma.setRange(0.1, 50.0)
+        self._blur_sigma.setSingleStep(0.5)
+        self._blur_sigma.setValue(1.0)
+        blur_sigma_row.addWidget(self._blur_sigma)
+        blur_layout.addLayout(blur_sigma_row)
+
+        self._blur_btn = QPushButton("Apply Gaussian Blur")
+        self._blur_btn.clicked.connect(self._run_gaussian_blur)
+        blur_layout.addWidget(self._blur_btn)
+
+        blur_group.setLayout(blur_layout)
+        layout.addWidget(blur_group)
+
         # ── Walking Average ───────────────────────────────────────────
         wa_group = QGroupBox("Walking Average")
         wa_layout = QVBoxLayout()
@@ -469,6 +489,35 @@ class PreProcessingWidget(QWidget):
         self._n2v_cancel_btn.setEnabled(False)
         show_info("N2V cancelled.")
         self._status_label.setText("N2V cancelled.")
+
+    # ── Walking Average ───────────────────────────────────────────────
+
+    # ── Gaussian Blur ─────────────────────────────────────────────────
+
+    def _run_gaussian_blur(self):
+        layer_name, image = self._get_image()
+        if image is None:
+            return
+
+        from scipy.ndimage import gaussian_filter
+
+        sigma = self._blur_sigma.value()
+        show_info(f"Applying Gaussian blur (sigma={sigma})...")
+
+        if image.ndim == 2:
+            result = gaussian_filter(image.astype(np.float64), sigma=sigma)
+        elif image.ndim == 3:
+            frames = []
+            for t in progress(range(image.shape[0]), desc="Gaussian blur"):
+                frames.append(gaussian_filter(image[t].astype(np.float64), sigma=sigma))
+            result = np.stack(frames, axis=0)
+        else:
+            show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
+            return
+
+        self.viewer.add_image(result, name=f"{layer_name} (blur s={sigma})")
+        show_info("Done — Gaussian blur applied.")
+        self._status_label.setText("Gaussian blur applied.")
 
     # ── Walking Average ───────────────────────────────────────────────
 
