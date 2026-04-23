@@ -20,6 +20,8 @@ from qtpy.QtWidgets import (
 )
 
 from napari_spotiflow_tracking._preprocessing import (
+    crop_image,
+    first_rectangle_bbox,
     remove_background_high_pass,
     remove_background_high_pass_stack,
     remove_background_erosion,
@@ -57,6 +59,34 @@ class PreProcessingWidget(QWidget):
         input_layout.addLayout(row)
         input_group.setLayout(input_layout)
         layout.addWidget(input_group)
+
+        # ── Crop ──────────────────────────────────────────────────────
+        crop_group = QGroupBox("Crop")
+        crop_layout = QVBoxLayout()
+
+        shapes_row = QHBoxLayout()
+        shapes_row.addWidget(QLabel("Shapes layer:"))
+        self._shapes_combo = QComboBox()
+        shapes_row.addWidget(self._shapes_combo)
+        refresh_shapes_btn = QPushButton("↻")
+        refresh_shapes_btn.setFixedWidth(30)
+        refresh_shapes_btn.setToolTip("Refresh shapes layer list")
+        refresh_shapes_btn.clicked.connect(self._refresh_shapes_combo)
+        shapes_row.addWidget(refresh_shapes_btn)
+        new_shapes_btn = QPushButton("+ New")
+        new_shapes_btn.setToolTip(
+            "Create a new empty Shapes layer and enter rectangle-draw mode"
+        )
+        new_shapes_btn.clicked.connect(self._new_shapes_layer)
+        shapes_row.addWidget(new_shapes_btn)
+        crop_layout.addLayout(shapes_row)
+
+        self._crop_btn = QPushButton("Apply Crop")
+        self._crop_btn.clicked.connect(self._run_crop)
+        crop_layout.addWidget(self._crop_btn)
+
+        crop_group.setLayout(crop_layout)
+        layout.addWidget(crop_group)
 
         # Device
         self._use_gpu = QCheckBox("Use GPU (CUDA)")
@@ -239,6 +269,7 @@ class PreProcessingWidget(QWidget):
 
         layout.addStretch()
         self._refresh_image_combo()
+        self._refresh_shapes_combo()
 
     # ── Events ────────────────────────────────────────────────────────
 
@@ -248,6 +279,7 @@ class PreProcessingWidget(QWidget):
 
     def _on_layer_change(self, event=None):
         self._refresh_image_combo()
+        self._refresh_shapes_combo()
 
     def _refresh_image_combo(self):
         prev = self._image_combo.currentText()
@@ -258,6 +290,61 @@ class PreProcessingWidget(QWidget):
         idx = self._image_combo.findText(prev)
         if idx >= 0:
             self._image_combo.setCurrentIndex(idx)
+
+    def _refresh_shapes_combo(self):
+        prev = self._shapes_combo.currentText()
+        self._shapes_combo.clear()
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Shapes):
+                self._shapes_combo.addItem(layer.name)
+        idx = self._shapes_combo.findText(prev)
+        if idx >= 0:
+            self._shapes_combo.setCurrentIndex(idx)
+
+    def _new_shapes_layer(self):
+        layer = self.viewer.add_shapes(name="Crop ROI")
+        layer.mode = "add_rectangle"
+        self.viewer.layers.selection.active = layer
+        self._refresh_shapes_combo()
+        idx = self._shapes_combo.findText(layer.name)
+        if idx >= 0:
+            self._shapes_combo.setCurrentIndex(idx)
+
+    def _run_crop(self):
+        layer_name, image = self._get_image()
+        if image is None:
+            return
+        if image.ndim not in (2, 3):
+            show_error(
+                f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D."
+            )
+            return
+
+        shapes_name = self._shapes_combo.currentText()
+        if not shapes_name:
+            show_error("No shapes layer selected.")
+            return
+
+        shapes_layer = self.viewer.layers[shapes_name]
+        try:
+            bbox = first_rectangle_bbox(
+                shapes_layer.data,
+                shapes_layer.shape_type,
+                image.shape,
+            )
+        except ValueError as e:
+            show_error(str(e))
+            return
+
+        result = crop_image(image, bbox)
+        y_min, y_max, x_min, x_max = bbox
+        self.viewer.add_image(result, name=f"{layer_name} (crop)")
+        show_info(
+            f"Cropped to Y=[{y_min}:{y_max}] X=[{x_min}:{x_max}]"
+        )
+        self._status_label.setText(
+            f"Cropped to Y=[{y_min}:{y_max}] X=[{x_min}:{x_max}]."
+        )
 
     def _on_bg_method_changed(self, method: str):
         is_highpass = "High-pass" in method
