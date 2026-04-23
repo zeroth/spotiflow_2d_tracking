@@ -337,3 +337,63 @@ def walking_average(image_stack: np.ndarray, window: int = 3) -> np.ndarray:
         result[t] = (cumsum[hi] - cumsum[lo]) / (hi - lo)
 
     return result.astype(image_stack.dtype)
+
+
+# ── Crop via Shapes layer rectangle ──────────────────────────────────
+
+
+def first_rectangle_bbox(shapes_data, shape_types, image_shape):
+    """Compute axis-aligned bbox of the first rectangle in a Shapes layer.
+
+    Iterates through the shapes list, picks the first one whose type is
+    ``"rectangle"``, takes the last two coordinate dims as (Y, X), and
+    returns the AABB clipped to the image's Y/X bounds.
+
+    Args:
+        shapes_data: list of (N, D) corner arrays, as stored on
+            ``napari.layers.Shapes.data``.
+        shape_types: parallel list of shape-type strings, as stored on
+            ``napari.layers.Shapes.shape_type``.
+        image_shape: shape tuple of the target image. The last two entries
+            must be ``(H, W)``.
+
+    Returns:
+        Tuple ``(y_min, y_max, x_min, x_max)`` suitable for slicing.
+
+    Raises:
+        ValueError: no rectangle is present, or the clipped bbox is empty.
+    """
+    h, w = image_shape[-2], image_shape[-1]
+    for data, stype in zip(shapes_data, shape_types):
+        if stype != "rectangle":
+            continue
+        corners = np.asarray(data, dtype=float)
+        ys = corners[:, -2]
+        xs = corners[:, -1]
+        y_min = max(0, int(round(float(ys.min()))))
+        y_max = min(int(h), int(round(float(ys.max()))))
+        x_min = max(0, int(round(float(xs.min()))))
+        x_max = min(int(w), int(round(float(xs.max()))))
+        if y_max - y_min <= 0 or x_max - x_min <= 0:
+            raise ValueError(
+                "Crop region is empty (rectangle outside image bounds)."
+            )
+        return (y_min, y_max, x_min, x_max)
+    raise ValueError("No rectangle found in shapes layer.")
+
+
+def crop_image(image, bbox):
+    """Slice an image using a ``(y_min, y_max, x_min, x_max)`` bbox.
+
+    Works for both 2D ``(Y, X)`` and 3D ``(T, Y, X)`` inputs because the
+    slice indexes only the last two dimensions.
+
+    Args:
+        image: 2D or 3D numpy array.
+        bbox: tuple returned by :func:`first_rectangle_bbox`.
+
+    Returns:
+        Cropped array (a view into ``image``).
+    """
+    y_min, y_max, x_min, x_max = bbox
+    return image[..., y_min:y_max, x_min:x_max]
