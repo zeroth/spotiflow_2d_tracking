@@ -402,27 +402,39 @@ def crop_image(image, bbox):
 # ── Scalar calculation (add / subtract) ──────────────────────────────
 
 
-def apply_calculation(image: np.ndarray, op: str, value: float) -> np.ndarray:
-    """Add or subtract a scalar from an image.
+def apply_calculation(image: np.ndarray, op: str, value: int) -> np.ndarray:
+    """Add or subtract an integer scalar from an image.
 
-    Always returns a new ``float64`` array — never a view, never the input
-    dtype. Promotion to float avoids underflow when subtracting from
-    unsigned-integer images.
+    Returns a new array with the *same dtype as the input*. For integer
+    input dtypes, underflow and overflow are clipped to the dtype's
+    representable range (e.g. a ``uint16`` image clipped to ``[0, 65535]``).
+    For floating-point inputs the math is performed and cast back to the
+    input dtype with no clipping.
 
     Args:
         image: 2D or 3D numpy array.
         op: ``"add"`` or ``"subtract"``.
-        value: scalar to add or subtract. May be negative.
+        value: integer scalar (the widget restricts this to ``>= 0``; the
+            helper itself accepts any int).
 
     Returns:
-        New ``float64`` array of the same shape as ``image``.
+        New array of the same shape and dtype as ``image``. Always a copy
+        — never a view.
 
     Raises:
         ValueError: if ``op`` is not one of ``"add"`` or ``"subtract"``.
     """
-    arr = image.astype(np.float64)
-    if op == "add":
-        return arr + value
-    if op == "subtract":
-        return arr - value
-    raise ValueError(f"Unknown op: {op!r}")
+    if op not in ("add", "subtract"):
+        raise ValueError(f"Unknown op: {op!r}")
+
+    sign = 1 if op == "add" else -1
+
+    if np.issubdtype(image.dtype, np.integer):
+        info = np.iinfo(image.dtype)
+        # Compute in int64 to avoid intermediate overflow during the math.
+        wide = image.astype(np.int64) + sign * int(value)
+        clipped = np.clip(wide, info.min, info.max)
+        return clipped.astype(image.dtype)
+
+    # Floating-point input: do the math, then cast back to the input dtype.
+    return (image + sign * value).astype(image.dtype, copy=True)
