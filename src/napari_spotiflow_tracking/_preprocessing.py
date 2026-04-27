@@ -397,3 +397,32 @@ def crop_image(image, bbox):
     """
     y_min, y_max, x_min, x_max = bbox
     return image[..., y_min:y_max, x_min:x_max]
+
+
+# ── Scalar calculation (add / subtract) ──────────────────────────────
+
+
+def apply_calculation(image: np.ndarray, op: str, value: float) -> np.ndarray:
+    """Add or subtract a scalar from an image.
+
+    Always returns a new ``float64`` array — never a view, never the input
+    dtype. Promotion to float avoids underflow when subtracting from
+    unsigned-integer images.
+
+    Args:
+        image: 2D or 3D numpy array.
+        op: ``"add"`` or ``"subtract"``.
+        value: scalar to add or subtract. May be negative.
+
+    Returns:
+        New ``float64`` array of the same shape as ``image``.
+
+    Raises:
+        ValueError: if ``op`` is not one of ``"add"`` or ``"subtract"``.
+    """
+    arr = image.astype(np.float64)
+    if op == "add":
+        return arr + value
+    if op == "subtract":
+        return arr - value
+    raise ValueError(f"Unknown op: {op!r}")
