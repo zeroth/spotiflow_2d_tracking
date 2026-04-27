@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_spotiflow_tracking._preprocessing import (
+    apply_calculation,
     crop_image,
     first_rectangle_bbox,
     remove_background_high_pass,
@@ -87,6 +88,39 @@ class PreProcessingWidget(QWidget):
 
         crop_group.setLayout(crop_layout)
         layout.addWidget(crop_group)
+
+        # ── Calculation ──────────────────────────────────────────────
+        calc_group = QGroupBox("Calculation")
+        calc_layout = QVBoxLayout()
+
+        op_row = QHBoxLayout()
+        op_row.addWidget(QLabel("Operation:"))
+        self._calc_op_combo = QComboBox()
+        self._calc_op_combo.addItems(["Add", "Subtract"])
+        op_row.addWidget(self._calc_op_combo)
+        calc_layout.addLayout(op_row)
+
+        value_row = QHBoxLayout()
+        value_row.addWidget(QLabel("Value:"))
+        self._calc_value = QDoubleSpinBox()
+        self._calc_value.setRange(-1e9, 1e9)
+        self._calc_value.setDecimals(4)
+        self._calc_value.setValue(0.0)
+        value_row.addWidget(self._calc_value)
+        self._calc_mean_btn = QPushButton("Mean")
+        self._calc_mean_btn.setToolTip(
+            "Fill the value field with the mean of the selected image"
+        )
+        self._calc_mean_btn.clicked.connect(self._run_calc_mean)
+        value_row.addWidget(self._calc_mean_btn)
+        calc_layout.addLayout(value_row)
+
+        self._calc_apply_btn = QPushButton("Apply")
+        self._calc_apply_btn.clicked.connect(self._run_calc_apply)
+        calc_layout.addWidget(self._calc_apply_btn)
+
+        calc_group.setLayout(calc_layout)
+        layout.addWidget(calc_group)
 
         # Device
         self._use_gpu = QCheckBox("Use GPU (CUDA)")
@@ -345,6 +379,36 @@ class PreProcessingWidget(QWidget):
         self._status_label.setText(
             f"Cropped to Y=[{y_min}:{y_max}] X=[{x_min}:{x_max}]."
         )
+
+    # ── Calculation ──────────────────────────────────────────────────
+
+    def _run_calc_mean(self):
+        layer_name, image = self._get_image()
+        if image is None:
+            return
+        mean_val = float(np.mean(image))
+        self._calc_value.setValue(mean_val)
+        self._status_label.setText(f"Mean = {mean_val:g}")
+
+    def _run_calc_apply(self):
+        layer_name, image = self._get_image()
+        if image is None:
+            return
+
+        op = self._calc_op_combo.currentText().lower()
+        value = self._calc_value.value()
+
+        try:
+            result = apply_calculation(image, op, value)
+        except ValueError as e:
+            show_error(str(e))
+            return
+
+        sign = "+" if op == "add" else "-"
+        suffix = f"({sign}{value:g})"
+        self.viewer.add_image(result, name=f"{layer_name} {suffix}")
+        show_info(f"Calculated: {op} {value:g}")
+        self._status_label.setText(f"Applied {op} {value:g}.")
 
     def _on_bg_method_changed(self, method: str):
         is_highpass = "High-pass" in method
