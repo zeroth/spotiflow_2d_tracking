@@ -102,10 +102,9 @@ class PreProcessingWidget(QWidget):
 
         value_row = QHBoxLayout()
         value_row.addWidget(QLabel("Value:"))
-        self._calc_value = QDoubleSpinBox()
-        self._calc_value.setRange(-1e9, 1e9)
-        self._calc_value.setDecimals(4)
-        self._calc_value.setValue(0.0)
+        self._calc_value = QSpinBox()
+        self._calc_value.setRange(0, 2**31 - 1)
+        self._calc_value.setValue(0)
         value_row.addWidget(self._calc_value)
         self._calc_mean_btn = QPushButton("Mean")
         self._calc_mean_btn.setToolTip(
@@ -386,9 +385,9 @@ class PreProcessingWidget(QWidget):
         layer_name, image = self._get_image()
         if image is None:
             return
-        mean_val = float(np.mean(image))
+        mean_val = int(round(float(np.mean(image))))
         self._calc_value.setValue(mean_val)
-        self._status_label.setText(f"Mean = {mean_val:g}")
+        self._status_label.setText(f"Mean = {mean_val}")
 
     def _run_calc_apply(self):
         layer_name, image = self._get_image()
@@ -405,10 +404,10 @@ class PreProcessingWidget(QWidget):
             return
 
         sign = "+" if op == "add" else "-"
-        suffix = f"({sign}{value:g})"
+        suffix = f"({sign}{value})"
         self.viewer.add_image(result, name=f"{layer_name} {suffix}")
-        show_info(f"Calculated: {op} {value:g}")
-        self._status_label.setText(f"Applied {op} {value:g}.")
+        show_info(f"Calculated: {op} {value}")
+        self._status_label.setText(f"Applied {op} {value}.")
 
     def _on_bg_method_changed(self, method: str):
         is_highpass = "High-pass" in method
