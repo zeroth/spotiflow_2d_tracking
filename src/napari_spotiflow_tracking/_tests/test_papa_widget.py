@@ -138,3 +138,53 @@ class TestPAPAWidgetValidation:
         widget._group2_size.setText("0")
         widget._plot_btn.click()
         assert "group 2 size" in widget._status_label.text().lower()
+
+
+class TestPAPAWidgetPlotPipeline:
+    def _make_synthetic_layer(self, viewer, n_frames=12, spots_per_frame=3):
+        """Add a Points layer with `spots_per_frame` spots on each of `n_frames` frames."""
+        rows = []
+        rng = np.random.default_rng(0)
+        for f in range(n_frames):
+            for _ in range(spots_per_frame):
+                rows.append([f, rng.uniform(0, 100), rng.uniform(0, 100)])
+        viewer.add_points(np.array(rows), name="spots")
+
+    def test_plot_renders_combined_axes(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer, n_frames=12)
+        widget._group1_size.setText("5")
+        widget._group2_size.setText("5")
+        widget._skip_frames.setText("1")
+        widget._plot_btn.click()
+        assert len(widget._fig_combined.axes) == 1
+
+    def test_plot_caches_per_frame_df(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer, n_frames=12, spots_per_frame=3)
+        widget._plot_btn.click()
+        df = widget._last_per_frame_df
+        assert df is not None
+        assert list(df.columns) == ["frame", "n_particles", "cycle", "group"]
+        assert df["n_particles"].tolist() == [3] * 12
+
+    def test_plot_status_message(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer, n_frames=12)
+        widget._plot_btn.click()
+        assert "plotted" in widget._status_label.text().lower()
+        assert "1 cycles" in widget._status_label.text() or \
+               "1 cycle" in widget._status_label.text()
+
+    def test_export_button_enabled_after_plot(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer, n_frames=12)
+        widget._plot_btn.click()
+        assert widget._export_btn.isEnabled() is True
+
+    def test_active_tab_switches_to_plots(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer, n_frames=12)
+        assert widget._tabs.currentIndex() == 0
+        widget._plot_btn.click()
+        assert widget._tabs.currentIndex() == 1

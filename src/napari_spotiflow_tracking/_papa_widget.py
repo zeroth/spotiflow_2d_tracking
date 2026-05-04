@@ -241,4 +241,105 @@ class PAPAWidget(QWidget):
         validated = self._validate_inputs()
         if validated is None:
             return
-        # Plot pipeline added in Task 9.
+        data, g1, g2, skip, label1, label2 = validated
+
+        per_frame, n_neg = compute_particles_per_frame(data)
+        if len(per_frame) == 0:
+            self._set_status_error("Need at least 1 frame of data.")
+            return
+
+        max_time = int(per_frame["frame"].max())
+        cycle_info = build_cycle_info(max_time, g1, g2, skip)
+        per_frame = annotate_with_cycle_group(per_frame, cycle_info)
+
+        self._render_combined_plot(
+            self._fig_combined, per_frame, cycle_info,
+            max_time, g1, g2, skip, label1, label2,
+        )
+        self._canvas_combined.draw_idle()
+
+        self._render_ratio_plot(
+            self._fig_ratio, per_frame, cycle_info, label1, label2,
+        )
+        self._canvas_ratio.draw_idle()
+
+        self._last_per_frame_df = per_frame
+        self._export_btn.setEnabled(True)
+
+        n_cycles = max((c["cycle"] for c in cycle_info), default=0)
+        msg = f"Plotted {n_cycles} cycles across {max_time} frames."
+        if g1 + skip + g2 + skip > max_time and n_cycles > 0:
+            msg += " (cycle pattern exceeds frame range; only partial cycles drawn.)"
+        if n_neg > 0:
+            msg += f" Negative frame indices found; clipped to 0 ({n_neg} rows)."
+        self._status_label.setText(msg)
+        show_info(msg)
+
+        self._tabs.setCurrentWidget(self._plots_tab)
+
+    NAPARI_BG = "#262930"
+    NAPARI_FG = "#d6d6d6"
+    LINE_COLOR = "#e0e0e0"
+
+    @classmethod
+    def _style_figure(cls, fig):
+        fig.patch.set_facecolor(cls.NAPARI_BG)
+        for ax in fig.axes:
+            ax.set_facecolor(cls.NAPARI_BG)
+            for spine in ax.spines.values():
+                spine.set_color(cls.NAPARI_FG)
+            ax.tick_params(colors=cls.NAPARI_FG)
+            ax.xaxis.label.set_color(cls.NAPARI_FG)
+            ax.yaxis.label.set_color(cls.NAPARI_FG)
+            ax.title.set_color(cls.NAPARI_FG)
+            legend = ax.get_legend()
+            if legend is not None:
+                for text in legend.get_texts():
+                    text.set_color(cls.NAPARI_FG)
+
+    def _render_combined_plot(
+        self, fig, per_frame, cycle_info, max_time,
+        g1, g2, skip, label1, label2,
+    ):
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.plot(
+            per_frame["frame"], per_frame["n_particles"],
+            color=self.LINE_COLOR, linewidth=1.0,
+        )
+
+        sep_colors = ["tab:blue", "tab:orange"]
+        sep1_labeled = False
+        sep2_labeled = False
+        for info in cycle_info:
+            if info["end_frame"] < max_time:
+                sep_color = sep_colors[(info["group"] - 1) % 2]
+                if info["group"] == 1 and not sep1_labeled:
+                    sep_label = label1
+                    sep1_labeled = True
+                elif info["group"] == 2 and not sep2_labeled:
+                    sep_label = label2
+                    sep2_labeled = True
+                else:
+                    sep_label = None
+                ax.axvline(
+                    x=info["end_frame"] + 0.5, color=sep_color,
+                    linestyle="-", alpha=0.6, linewidth=1.5,
+                    label=sep_label,
+                )
+
+        ax.set_title(
+            f"All Cycles Combined — Particles per Frame  "
+            f"(G1={g1}f + skip{skip}f + G2={g2}f + skip{skip}f)"
+        )
+        ax.set_xlabel("Time (frame)")
+        ax.set_ylabel("Number of Particles")
+        if sep1_labeled or sep2_labeled:
+            ax.legend(loc="upper right", fontsize=8)
+        ax.grid(alpha=0.3)
+        self._style_figure(fig)
+
+    def _render_ratio_plot(self, fig, per_frame, cycle_info, label1, label2):
+        # Stub - filled in Task 10.
+        fig.clear()
+        self._style_figure(fig)
