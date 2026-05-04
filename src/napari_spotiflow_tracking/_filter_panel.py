@@ -540,5 +540,24 @@ class FilterPanel(QWidget):
             self._update_tracks_sibling(filtered, name)
 
     def _update_tracks_sibling(self, filtered: pd.DataFrame, name: str):
-        # Implemented in Task 10
-        pass
+        tracked_df = self._source_layer.metadata.get("tracked_df")
+        if not isinstance(tracked_df, pd.DataFrame):
+            return
+        kept_ids = filtered[self._id_column].astype(int).tolist()
+        if not kept_ids:
+            data = np.empty((0, 4))
+        else:
+            sub = tracked_df[tracked_df["particle"].isin(kept_ids)]
+            sub = sub.sort_values(["particle", "frame"])
+            data = sub[["particle", "frame", "y", "x"]].to_numpy()
+
+        if name in self._viewer.layers:
+            try:
+                self._viewer.layers.remove(name)
+            except (KeyError, ValueError):
+                pass
+
+        if len(data) == 0:
+            self._sibling_layer = None
+            return
+        self._sibling_layer = self._viewer.add_tracks(data, name=name)

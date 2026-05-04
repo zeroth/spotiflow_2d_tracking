@@ -471,3 +471,49 @@ class TestSiblingLayerPoints:
         assert "spots (filtered)" in [l.name for l in viewer.layers]
         viewer.layers.remove("spots")
         assert "spots (filtered)" not in [l.name for l in viewer.layers]
+
+
+class TestSiblingLayerTracks:
+    def _add_tracks_with_props(self, viewer, name, tracked_df, meta_df):
+        # tracked_df: columns frame, y, x, particle (output of track_blobs)
+        # Build (N, 4) napari Tracks data: (track_id, t, y, x)
+        rows = tracked_df.sort_values(["particle", "frame"])[
+            ["particle", "frame", "y", "x"]
+        ].to_numpy()
+        layer = viewer.add_tracks(rows, name=name)
+        layer.metadata["properties"] = meta_df
+        layer.metadata["tracked_df"] = tracked_df
+        return layer
+
+    def test_check_creates_tracks_sibling(self, filter_panel_tracks):
+        panel, viewer = filter_panel_tracks
+        tracked_df = pd.DataFrame({
+            "frame": [0, 1, 0, 1, 2],
+            "y": [0.0, 0.0, 5.0, 5.0, 5.0],
+            "x": [0.0, 0.0, 5.0, 5.0, 5.0],
+            "particle": [1, 1, 2, 2, 2],
+        })
+        meta_df = pd.DataFrame({"track_id": [1, 2], "length": [2, 3]})
+        self._add_tracks_with_props(viewer, "t", tracked_df, meta_df)
+        panel._on_layer_changed("t")
+        panel._show_filtered_cb.setChecked(True)
+        assert "t (filtered)" in [l.name for l in viewer.layers]
+
+    def test_filter_keeps_only_long_tracks(self, filter_panel_tracks):
+        panel, viewer = filter_panel_tracks
+        tracked_df = pd.DataFrame({
+            "frame": [0, 1, 0, 1, 2],
+            "y": [0.0, 0.0, 5.0, 5.0, 5.0],
+            "x": [0.0, 0.0, 5.0, 5.0, 5.0],
+            "particle": [1, 1, 2, 2, 2],
+        })
+        meta_df = pd.DataFrame({"track_id": [1, 2], "length": [2, 3]})
+        self._add_tracks_with_props(viewer, "t", tracked_df, meta_df)
+        panel._on_layer_changed("t")
+        panel._show_filtered_cb.setChecked(True)
+        # Filter to length >= 3 -> only track 2 (3 vertices)
+        panel._sliders["length"].setValue((3, 3))
+        panel._refresh()
+        sibling = viewer.layers["t (filtered)"]
+        assert len(sibling.data) == 3
+        assert all(row[0] == 2 for row in sibling.data)
