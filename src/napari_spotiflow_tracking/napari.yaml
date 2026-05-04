@@ -11,6 +11,9 @@ contributions:
     - id: napari-spotiflow-tracking.tracking_widget
       python_name: napari_spotiflow_tracking._tracking_widget:TrackingWidget
       title: Spot Tracking
+    - id: napari-spotiflow-tracking.papa_widget
+      python_name: napari_spotiflow_tracking._papa_widget:PAPAWidget
+      title: PAPA
   widgets:
     - command: napari-spotiflow-tracking.preprocessing_widget
       display_name: Pre-Processing
@@ -18,3 +21,5 @@ contributions:
       display_name: Spot Detection
     - command: napari-spotiflow-tracking.tracking_widget
       display_name: Spot Tracking
+    - command: napari-spotiflow-tracking.papa_widget
+      display_name: PAPA
