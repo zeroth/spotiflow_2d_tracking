@@ -296,6 +296,8 @@ class PAPAWidget(QWidget):
             ax.title.set_color(cls.NAPARI_FG)
             legend = ax.get_legend()
             if legend is not None:
+                legend.get_frame().set_facecolor(cls.NAPARI_BG)
+                legend.get_frame().set_edgecolor(cls.NAPARI_FG)
                 for text in legend.get_texts():
                     text.set_color(cls.NAPARI_FG)
 
