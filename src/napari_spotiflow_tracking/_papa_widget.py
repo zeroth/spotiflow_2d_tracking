@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import napari
+from matplotlib.backends.backend_qtagg import (
+    FigureCanvasQTAgg as FigureCanvas,
+    NavigationToolbar2QT as NavigationToolbar,
+)
+from matplotlib.figure import Figure
 from qtpy.QtGui import QIntValidator
 from qtpy.QtWidgets import (
     QComboBox,
@@ -117,14 +122,26 @@ class PAPAWidget(QWidget):
         return page
 
     def _build_plots_tab(self) -> QWidget:
-        # Plots tab built in Task 7. For now, return an empty scroll area
-        # so the tab exists.
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         inner = QWidget()
-        inner.setLayout(QVBoxLayout())
+        inner_layout = QVBoxLayout()
+        inner.setLayout(inner_layout)
+
+        self._fig_combined = Figure(figsize=(10, 4), tight_layout=True)
+        self._canvas_combined = FigureCanvas(self._fig_combined)
+        self._toolbar_combined = NavigationToolbar(self._canvas_combined, self)
+        inner_layout.addWidget(self._toolbar_combined)
+        inner_layout.addWidget(self._canvas_combined)
+
+        self._fig_ratio = Figure(figsize=(10, 9), tight_layout=True)
+        self._canvas_ratio = FigureCanvas(self._fig_ratio)
+        self._toolbar_ratio = NavigationToolbar(self._canvas_ratio, self)
+        inner_layout.addWidget(self._toolbar_ratio)
+        inner_layout.addWidget(self._canvas_ratio)
+
+        inner_layout.addStretch()
         scroll.setWidget(inner)
-        self._plots_inner = inner
         return scroll
 
     def _connect_events(self):

@@ -83,3 +83,22 @@ class TestPAPAWidgetLayerCombo:
         assert len(refresh_btns) == 1
         refresh_btns[0].click()
         assert widget._points_combo.count() == 1
+
+
+class TestPAPAWidgetCanvases:
+    def test_combined_figure_and_canvas_exist(self, papa_widget):
+        widget, _ = papa_widget
+        assert widget._fig_combined is not None
+        assert widget._canvas_combined is not None
+        assert widget._toolbar_combined is not None
+
+    def test_ratio_figure_and_canvas_exist(self, papa_widget):
+        widget, _ = papa_widget
+        assert widget._fig_ratio is not None
+        assert widget._canvas_ratio is not None
+        assert widget._toolbar_ratio is not None
+
+    def test_figures_start_blank(self, papa_widget):
+        widget, _ = papa_widget
+        assert len(widget._fig_combined.axes) == 0
+        assert len(widget._fig_ratio.axes) == 0
