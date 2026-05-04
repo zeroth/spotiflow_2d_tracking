@@ -6,6 +6,7 @@ from typing import Literal
 
 import napari
 import napari.layers
+import numpy as np
 import pandas as pd
 from qtpy.QtCore import (
     QAbstractTableModel,
@@ -17,6 +18,7 @@ from qtpy.QtCore import (
     Signal,
 )
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -24,11 +26,17 @@ from qtpy.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 from superqt import QLabeledDoubleRangeSlider, QLabeledRangeSlider
+from matplotlib import colormaps
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+from napari_spotiflow_tracking._mpl_theme import style_figure
 
 
 class _PropertyTableModel(QAbstractTableModel):
@@ -144,6 +152,29 @@ class FilterPanel(QWidget):
         layout.addWidget(sliders_group)
         self._sliders_group = sliders_group
 
+        hist_group = QGroupBox("Histogram")
+        hist_outer = QVBoxLayout()
+        hist_group.setLayout(hist_outer)
+
+        cb_scroll = QScrollArea()
+        cb_scroll.setWidgetResizable(True)
+        cb_scroll.setMaximumHeight(80)
+        cb_inner = QWidget()
+        self._hist_checkbox_layout = QVBoxLayout()
+        cb_inner.setLayout(self._hist_checkbox_layout)
+        cb_scroll.setWidget(cb_inner)
+        hist_outer.addWidget(cb_scroll)
+
+        self._hist_fig = Figure(figsize=(6, 3), tight_layout=True)
+        self._hist_canvas = FigureCanvas(self._hist_fig)
+        self._hist_canvas.setFixedHeight(220)
+        hist_outer.addWidget(self._hist_canvas)
+
+        layout.addWidget(hist_group)
+        self._hist_group = hist_group
+        self._hist_checkboxes: dict = {}
+        self._hist_colors: dict = {}
+
         self._table_model = _PropertyTableModel(self)
         self._proxy = _PropertyTableProxy(self)
         self._proxy.setSourceModel(self._table_model)
@@ -237,6 +268,7 @@ class FilterPanel(QWidget):
         self._build_sliders(props)
         self._table_model.setDataFrame(props)
         self._proxy.setRanges({})
+        self._redraw_histogram()
         self._update_status()
 
     def _clear_sliders(self):
@@ -251,6 +283,15 @@ class FilterPanel(QWidget):
             w = item.widget()
             if w is not None:
                 w.setParent(None)
+        for cb in self._hist_checkboxes.values():
+            cb.setParent(None)
+        self._hist_checkboxes = {}
+        self._hist_colors = {}
+        while self._hist_checkbox_layout.count():
+            item = self._hist_checkbox_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
 
     def _is_filterable_column(self, col: str) -> bool:
         if col == self._id_column:
@@ -262,6 +303,8 @@ class FilterPanel(QWidget):
         return True
 
     def _build_sliders(self, df: pd.DataFrame):
+        cmap = colormaps.get_cmap("tab10")
+        color_idx = 0
         for col in df.columns:
             if not self._is_filterable_column(col):
                 continue
@@ -277,6 +320,10 @@ class FilterPanel(QWidget):
                 self._sliders_layout.addWidget(container)
                 self._constant_labels[col] = container
                 continue
+
+            color = cmap(color_idx % 10)
+            color_idx += 1
+            self._hist_colors[col] = color
 
             row = QHBoxLayout()
             row.addWidget(QLabel(col))
@@ -297,6 +344,12 @@ class FilterPanel(QWidget):
             slider.valueChanged.connect(
                 lambda v, c=col: self._on_slider_changed(c, v)
             )
+
+            cb = QCheckBox(col)
+            cb.setChecked(True)
+            cb.toggled.connect(self._redraw_histogram)
+            self._hist_checkbox_layout.addWidget(cb)
+            self._hist_checkboxes[col] = cb
 
     def _update_status(self):
         if self._layer_combo.count() == 0:
@@ -333,6 +386,8 @@ class FilterPanel(QWidget):
         n_filtered = len(filtered)
         n_total = len(self._source_df)
         self._status_label.setText(f"{n_filtered} / {n_total} rows match")
+
+        self._redraw_histogram(filtered=filtered)
 
     def _on_table_selection_changed(self, current, previous):
         if not current.isValid():
@@ -371,3 +426,46 @@ class FilterPanel(QWidget):
             mask &= (self._source_df[col] >= lo) & (self._source_df[col] <= hi)
         filtered = self._source_df[mask].reset_index(drop=True)
         filtered.to_csv(path, index=False)
+
+    def _redraw_histogram(self, filtered: pd.DataFrame | None = None, *_):
+        if self._source_df is None or self._hist_fig is None:
+            return
+        # Handle case where filtered might be a boolean (from checkbox toggled signal)
+        if not isinstance(filtered, pd.DataFrame):
+            filtered = None
+        if filtered is None:
+            mask = pd.Series(True, index=self._source_df.index)
+            for col, (lo, hi) in self._filter_ranges.items():
+                mask &= (self._source_df[col] >= lo) & (self._source_df[col] <= hi)
+            filtered = self._source_df[mask].reset_index(drop=True)
+
+        self._hist_fig.clear()
+        ax = self._hist_fig.add_subplot(111)
+        ax.set_xlabel("normalized [0, 1]")
+        ax.set_ylabel("count")
+
+        any_drawn = False
+        for col, slider in self._sliders.items():
+            cb = self._hist_checkboxes.get(col)
+            if cb is None or not cb.isChecked():
+                continue
+            col_min = self._source_df[col].min()
+            col_max = self._source_df[col].max()
+            if col_max == col_min:
+                continue
+            values = filtered[col].to_numpy() if col in filtered.columns else np.array([])
+            if values.size == 0:
+                continue
+            normed = (values - col_min) / (col_max - col_min)
+            color = self._hist_colors.get(col, "tab:blue")
+            ax.hist(
+                normed, bins=30, range=(0, 1),
+                histtype="stepfilled", alpha=0.5, color=color,
+                label=f"{col}  [{col_min:.3g} - {col_max:.3g}]",
+            )
+            any_drawn = True
+
+        if any_drawn:
+            ax.legend(loc="upper right", fontsize=8)
+        style_figure(self._hist_fig)
+        self._hist_canvas.draw_idle()

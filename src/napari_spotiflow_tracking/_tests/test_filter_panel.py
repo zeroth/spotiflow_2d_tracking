@@ -342,3 +342,56 @@ class TestResetAndExport:
         )
         # Should not raise
         panel._export_btn.click()
+
+
+class TestHistogram:
+    def test_checkbox_per_property(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": list(range(5)),
+            "frame": list(range(5)),
+            "y": [0.0] * 5,
+            "x": [0.0] * 5,
+            "intensity": [10.0, 20.0, 30.0, 40.0, 50.0],
+            "area": [100, 200, 300, 400, 500],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        assert set(panel._hist_checkboxes.keys()) == {"intensity", "area"}
+        assert all(cb.isChecked() for cb in panel._hist_checkboxes.values())
+
+    def test_histogram_has_one_axes(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0, 1],
+            "frame": [0, 1],
+            "y": [0.0, 0.0],
+            "x": [0.0, 0.0],
+            "intensity": [10.0, 20.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        assert len(panel._hist_fig.axes) == 1
+
+    def test_unchecking_property_removes_artist(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0, 1, 2],
+            "frame": [0, 1, 2],
+            "y": [0.0] * 3,
+            "x": [0.0] * 3,
+            "intensity": [10.0, 20.0, 30.0],
+            "area": [100, 200, 300],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        # Force redraw
+        panel._refresh()
+        ax = panel._hist_fig.axes[0]
+        n_patches_before = len(ax.patches)
+        assert n_patches_before > 0
+
+        # Uncheck intensity
+        panel._hist_checkboxes["intensity"].setChecked(False)
+        ax_after = panel._hist_fig.axes[0]
+        n_patches_after = len(ax_after.patches)
+        # At least the intensity patches are gone, area still there
+        assert n_patches_after < n_patches_before
+        assert n_patches_after > 0  # area still drawn
