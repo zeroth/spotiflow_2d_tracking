@@ -246,3 +246,97 @@ class TestFilterPipeline:
             )
             panel._on_table_selection_changed(proxy_index, proxy_index)
         assert blocker.args == [20]
+
+
+class TestResetAndExport:
+    def test_reset_restores_full_range(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": list(range(5)),
+            "frame": list(range(5)),
+            "y": [0.0] * 5,
+            "x": [0.0] * 5,
+            "intensity": [10.0, 20.0, 30.0, 40.0, 50.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        panel._sliders["intensity"].setValue((25.0, 35.0))
+        panel._refresh()
+        assert panel._proxy.rowCount() == 1
+
+        panel._reset_btn.click()
+        # After reset, slider returns to full range and table shows all
+        assert panel._proxy.rowCount() == 5
+        lo, hi = panel._sliders["intensity"].value()
+        assert lo == pytest.approx(10.0)
+        assert hi == pytest.approx(50.0)
+
+    def test_export_writes_filtered_csv(self, filter_panel_points, tmp_path, monkeypatch):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": list(range(5)),
+            "frame": list(range(5)),
+            "y": [0.0] * 5,
+            "x": [0.0] * 5,
+            "intensity": [10.0, 20.0, 30.0, 40.0, 50.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        panel._sliders["intensity"].setValue((25.0, 45.0))
+        panel._refresh()
+
+        out_path = tmp_path / "filtered.csv"
+        from qtpy.QtWidgets import QFileDialog
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            lambda *a, **kw: (str(out_path), "CSV files (*.csv)"),
+        )
+        panel._export_btn.click()
+
+        assert out_path.exists()
+        out_df = pd.read_csv(out_path)
+        assert list(out_df.columns) == list(df.columns)
+        assert len(out_df) == 2
+        assert out_df["intensity"].tolist() == [30.0, 40.0]
+
+    def test_export_zero_rows_writes_header_only(self, filter_panel_points, tmp_path, monkeypatch):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0, 1],
+            "frame": [0, 1],
+            "y": [0.0, 0.0],
+            "x": [0.0, 0.0],
+            "intensity": [10.0, 20.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        panel._sliders["intensity"].setValue((100.0, 200.0))  # no rows match
+        panel._refresh()
+
+        out_path = tmp_path / "empty.csv"
+        from qtpy.QtWidgets import QFileDialog
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            lambda *a, **kw: (str(out_path), "CSV files (*.csv)"),
+        )
+        panel._export_btn.click()
+
+        out_df = pd.read_csv(out_path)
+        assert len(out_df) == 0
+        assert list(out_df.columns) == list(df.columns)
+
+    def test_export_cancel_no_op(self, filter_panel_points, monkeypatch):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0],
+            "frame": [0],
+            "y": [0.0],
+            "x": [0.0],
+            "intensity": [10.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+
+        from qtpy.QtWidgets import QFileDialog
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            lambda *a, **kw: ("", ""),
+        )
+        # Should not raise
+        panel._export_btn.click()

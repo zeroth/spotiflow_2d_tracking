@@ -18,6 +18,7 @@ from qtpy.QtCore import (
 )
 from qtpy.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -161,6 +162,15 @@ class FilterPanel(QWidget):
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
 
+        btn_row = QHBoxLayout()
+        self._reset_btn = QPushButton("Reset Filters")
+        self._reset_btn.clicked.connect(self._on_reset_clicked)
+        btn_row.addWidget(self._reset_btn)
+        self._export_btn = QPushButton("Export Filtered CSV")
+        self._export_btn.clicked.connect(self._on_export_clicked)
+        btn_row.addWidget(self._export_btn)
+        layout.addLayout(btn_row)
+
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(150)
@@ -272,11 +282,15 @@ class FilterPanel(QWidget):
             row.addWidget(QLabel(col))
             if pd.api.types.is_integer_dtype(df[col]):
                 slider = QLabeledRangeSlider(Qt.Horizontal)
-                slider.setRange(int(col_min), int(col_max))
+                # Allow wider range for filtering outside data bounds
+                margin = max(abs(int(col_min)), abs(int(col_max))) * 10 + 1000
+                slider.setRange(int(col_min) - margin, int(col_max) + margin)
                 slider.setValue((int(col_min), int(col_max)))
             else:
                 slider = QLabeledDoubleRangeSlider(Qt.Horizontal)
-                slider.setRange(float(col_min), float(col_max))
+                # Allow wider range for filtering outside data bounds
+                margin = max(col_max - col_min, 1.0) * 10
+                slider.setRange(float(col_min) - margin, float(col_max) + margin)
                 slider.setValue((float(col_min), float(col_max)))
             row.addWidget(slider)
             container = QWidget()
@@ -333,3 +347,31 @@ class FilterPanel(QWidget):
         col_idx = list(self._table_model._df.columns).index(self._id_column)
         row_id = int(self._table_model._df.iat[source_index.row(), col_idx])
         self.selectionChanged.emit(row_id)
+
+    def _on_reset_clicked(self):
+        if self._source_df is None:
+            return
+        for col, slider in self._sliders.items():
+            col_min = self._source_df[col].min()
+            col_max = self._source_df[col].max()
+            if pd.api.types.is_integer_dtype(self._source_df[col]):
+                slider.setValue((int(col_min), int(col_max)))
+                self._filter_ranges[col] = (int(col_min), int(col_max))
+            else:
+                slider.setValue((float(col_min), float(col_max)))
+                self._filter_ranges[col] = (float(col_min), float(col_max))
+        self._refresh()
+
+    def _on_export_clicked(self):
+        if self._source_df is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save filtered CSV", "", "CSV files (*.csv)"
+        )
+        if not path:
+            return
+        mask = pd.Series(True, index=self._source_df.index)
+        for col, (lo, hi) in self._filter_ranges.items():
+            mask &= (self._source_df[col] >= lo) & (self._source_df[col] <= hi)
+        filtered = self._source_df[mask].reset_index(drop=True)
+        filtered.to_csv(path, index=False)
