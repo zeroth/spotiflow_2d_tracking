@@ -62,7 +62,35 @@ def build_cycle_info(
 
     Logic mirrors papa_analysis.py:47-79. Cycles and frames are 1-indexed.
     """
-    raise NotImplementedError
+    cycle_info: list[dict] = []
+    cycle_num = 0
+    current_frame = 1
+
+    while current_frame <= max_time:
+        cycle_num += 1
+
+        g1_start = current_frame
+        g1_end = min(current_frame + group1_size - 1, max_time)
+        cycle_info.append({
+            "cycle": cycle_num,
+            "group": 1,
+            "start_frame": g1_start,
+            "end_frame": g1_end,
+        })
+        current_frame = g1_end + 1 + skip_frames
+
+        if current_frame <= max_time:
+            g2_start = current_frame
+            g2_end = min(current_frame + group2_size - 1, max_time)
+            cycle_info.append({
+                "cycle": cycle_num,
+                "group": 2,
+                "start_frame": g2_start,
+                "end_frame": g2_end,
+            })
+            current_frame = g2_end + 1 + skip_frames
+
+    return cycle_info
 
 
 def annotate_with_cycle_group(

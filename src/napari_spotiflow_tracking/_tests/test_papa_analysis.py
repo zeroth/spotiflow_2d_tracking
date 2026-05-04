@@ -4,7 +4,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from napari_spotiflow_tracking._papa_analysis import compute_particles_per_frame
+from napari_spotiflow_tracking._papa_analysis import (
+    build_cycle_info,
+    compute_particles_per_frame,
+)
 
 
 class TestComputeParticlesPerFrame:
@@ -64,3 +67,52 @@ class TestComputeParticlesPerFrame:
         per_frame, _ = compute_particles_per_frame(points)
         assert pd.api.types.is_integer_dtype(per_frame["frame"])
         assert pd.api.types.is_integer_dtype(per_frame["n_particles"])
+
+
+class TestBuildCycleInfo:
+    def test_exact_fit_one_cycle(self):
+        # max_time=12, g1=5, g2=5, skip=1: G1 frames 1-5, skip frame 6,
+        # G2 frames 7-11, skip frame 12. One complete cycle.
+        info = build_cycle_info(max_time=12, group1_size=5, group2_size=5, skip_frames=1)
+        assert info == [
+            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 5},
+            {"cycle": 1, "group": 2, "start_frame": 7, "end_frame": 11},
+        ]
+
+    def test_partial_g2(self):
+        # max_time=8, g1=5, g2=5, skip=1: G1 1-5, skip 6, G2 7-8 (truncated).
+        info = build_cycle_info(max_time=8, group1_size=5, group2_size=5, skip_frames=1)
+        assert info == [
+            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 5},
+            {"cycle": 1, "group": 2, "start_frame": 7, "end_frame": 8},
+        ]
+
+    def test_no_room_for_g2(self):
+        # max_time=5: only G1.
+        info = build_cycle_info(max_time=5, group1_size=5, group2_size=5, skip_frames=1)
+        assert info == [
+            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 5},
+        ]
+
+    def test_two_full_cycles(self):
+        # max_time=24, g1=5, g2=5, skip=1: cycle 1 G1 1-5, G2 7-11; cycle 2
+        # G1 13-17, G2 19-23.
+        info = build_cycle_info(max_time=24, group1_size=5, group2_size=5, skip_frames=1)
+        assert info == [
+            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 5},
+            {"cycle": 1, "group": 2, "start_frame": 7, "end_frame": 11},
+            {"cycle": 2, "group": 1, "start_frame": 13, "end_frame": 17},
+            {"cycle": 2, "group": 2, "start_frame": 19, "end_frame": 23},
+        ]
+
+    def test_zero_max_time(self):
+        info = build_cycle_info(max_time=0, group1_size=5, group2_size=5, skip_frames=1)
+        assert info == []
+
+    def test_skip_zero(self):
+        # No skip: G1 1-3 then G2 4-6.
+        info = build_cycle_info(max_time=6, group1_size=3, group2_size=3, skip_frames=0)
+        assert info == [
+            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 3},
+            {"cycle": 1, "group": 2, "start_frame": 4, "end_frame": 6},
+        ]
