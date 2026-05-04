@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import numpy as np
 import napari
+from napari.utils.notifications import show_error, show_info
 from matplotlib.backends.backend_qtagg import (
     FigureCanvasQTAgg as FigureCanvas,
     NavigationToolbar2QT as NavigationToolbar,
 )
 from matplotlib.figure import Figure
 from qtpy.QtGui import QIntValidator
+
+from napari_spotiflow_tracking._papa_analysis import (
+    annotate_with_cycle_group,
+    build_cycle_info,
+    compute_particles_per_frame,
+)
 from qtpy.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -109,6 +117,7 @@ class PAPAWidget(QWidget):
 
         # Buttons + status
         self._plot_btn = QPushButton("Plot")
+        self._plot_btn.clicked.connect(self._on_plot_clicked)
         layout.addWidget(self._plot_btn)
 
         self._export_btn = QPushButton("Export CSV")
@@ -160,3 +169,76 @@ class PAPAWidget(QWidget):
         idx = self._points_combo.findText(prev)
         if idx >= 0:
             self._points_combo.setCurrentIndex(idx)
+
+    def _set_status_error(self, msg: str):
+        self._status_label.setText(msg)
+        show_error(msg)
+
+    def _parse_int_field(self, field, name: str, min_value: int) -> int | None:
+        text = field.text().strip()
+        if not text:
+            self._set_status_error(
+                f"{name} must be a {'positive' if min_value > 0 else 'non-negative'} integer."
+            )
+            return None
+        try:
+            value = int(text)
+        except ValueError:
+            self._set_status_error(
+                f"{name} must be a {'positive' if min_value > 0 else 'non-negative'} integer."
+            )
+            return None
+        if value < min_value:
+            self._set_status_error(
+                f"{name} must be a {'positive' if min_value > 0 else 'non-negative'} integer."
+            )
+            return None
+        return value
+
+    def _validate_inputs(self):
+        """Returns a tuple (points, g1, g2, skip, label1, label2) on success,
+        or None if any guard failed (status already updated)."""
+        layer_name = self._points_combo.currentText()
+        if not layer_name:
+            self._set_status_error("No Points layer selected.")
+            return None
+
+        if layer_name not in self.viewer.layers:
+            self._set_status_error("Selected layer no longer exists.")
+            return None
+
+        layer = self.viewer.layers[layer_name]
+        if not isinstance(layer, napari.layers.Points):
+            self._set_status_error("Selected layer is not a Points layer.")
+            return None
+
+        data = np.asarray(layer.data)
+        if data.ndim != 2 or data.shape[1] != 3:
+            self._set_status_error(
+                "Points layer must have 3 columns (frame, y, x)."
+            )
+            return None
+
+        if len(data) == 0:
+            self._set_status_error("Points layer is empty; nothing to plot.")
+            return None
+
+        g1 = self._parse_int_field(self._group1_size, "Group 1 size", 1)
+        if g1 is None:
+            return None
+        g2 = self._parse_int_field(self._group2_size, "Group 2 size", 1)
+        if g2 is None:
+            return None
+        skip = self._parse_int_field(self._skip_frames, "Skip frames", 0)
+        if skip is None:
+            return None
+
+        label1 = self._label_group1.text() or "G1"
+        label2 = self._label_group2.text() or "G2"
+        return data, g1, g2, skip, label1, label2
+
+    def _on_plot_clicked(self):
+        validated = self._validate_inputs()
+        if validated is None:
+            return
+        # Plot pipeline added in Task 9.

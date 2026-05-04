@@ -102,3 +102,39 @@ class TestPAPAWidgetCanvases:
         widget, _ = papa_widget
         assert len(widget._fig_combined.axes) == 0
         assert len(widget._fig_ratio.axes) == 0
+
+
+class TestPAPAWidgetValidation:
+    def test_no_layer_selected(self, papa_widget):
+        widget, _ = papa_widget
+        widget._plot_btn.click()
+        assert "no points layer" in widget._status_label.text().lower()
+        assert widget._export_btn.isEnabled() is False
+
+    def test_wrong_shape_layer(self, papa_widget):
+        widget, viewer = papa_widget
+        # Create a Points layer with 2 columns instead of 3.
+        viewer.add_points(np.array([[10.0, 20.0]]), name="bad")
+        widget._plot_btn.click()
+        assert "3 columns" in widget._status_label.text()
+
+    def test_empty_layer(self, papa_widget):
+        widget, viewer = papa_widget
+        viewer.add_points(np.empty((0, 3)), name="empty", ndim=3)
+        widget._plot_btn.click()
+        assert "empty" in widget._status_label.text().lower()
+
+    def test_empty_group_size_field(self, papa_widget):
+        widget, viewer = papa_widget
+        viewer.add_points(np.array([[0, 10.0, 20.0]]), name="spots")
+        widget._group1_size.setText("")
+        widget._plot_btn.click()
+        assert "group 1 size" in widget._status_label.text().lower()
+
+    def test_zero_group_size_rejected(self, papa_widget):
+        widget, viewer = papa_widget
+        viewer.add_points(np.array([[0, 10.0, 20.0]]), name="spots")
+        # Bypass the validator (which prevents typing 0) by setText.
+        widget._group2_size.setText("0")
+        widget._plot_btn.click()
+        assert "group 2 size" in widget._status_label.text().lower()
