@@ -188,3 +188,28 @@ class TestPAPAWidgetPlotPipeline:
         assert widget._tabs.currentIndex() == 0
         widget._plot_btn.click()
         assert widget._tabs.currentIndex() == 1
+
+
+class TestPAPAWidgetRatioPlot:
+    def _make_synthetic_layer(self, viewer, n_frames=24):
+        rows = []
+        for f in range(n_frames):
+            for _ in range(3):
+                rows.append([f, 10.0, 10.0])
+        viewer.add_points(np.array(rows), name="spots")
+
+    def test_ratio_figure_has_three_axes(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer)
+        widget._plot_btn.click()
+        assert len(widget._fig_ratio.axes) == 3
+
+    def test_ratio_figure_titles_contain_labels(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer)
+        widget._label_group1.setText("DR")
+        widget._label_group2.setText("PAPA")
+        widget._plot_btn.click()
+        titles = [ax.get_title() for ax in widget._fig_ratio.axes]
+        assert "DR / PAPA" in titles[1]
+        assert "PAPA / DR" in titles[2]

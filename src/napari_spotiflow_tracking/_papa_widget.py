@@ -340,6 +340,69 @@ class PAPAWidget(QWidget):
         self._style_figure(fig)
 
     def _render_ratio_plot(self, fig, per_frame, cycle_info, label1, label2):
-        # Stub - filled in Task 10.
         fig.clear()
+        cycles = sorted({info["cycle"] for info in cycle_info})
+
+        g1_counts = []
+        g2_counts = []
+        ratios_g1_g2 = []
+        ratios_g2_g1 = []
+
+        for cyc in cycles:
+            g1_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 1]
+            g2_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 2]
+
+            g1_total = 0
+            if g1_info:
+                mask = (
+                    (per_frame["frame"] >= g1_info[0]["start_frame"])
+                    & (per_frame["frame"] <= g1_info[0]["end_frame"])
+                )
+                g1_total = int(per_frame.loc[mask, "n_particles"].sum())
+
+            g2_total = 0
+            if g2_info:
+                mask = (
+                    (per_frame["frame"] >= g2_info[0]["start_frame"])
+                    & (per_frame["frame"] <= g2_info[0]["end_frame"])
+                )
+                g2_total = int(per_frame.loc[mask, "n_particles"].sum())
+
+            g1_counts.append(g1_total)
+            g2_counts.append(g2_total)
+            ratios_g1_g2.append(g1_total / g2_total if g2_total > 0 else np.nan)
+            ratios_g2_g1.append(g2_total / g1_total if g1_total > 0 else np.nan)
+
+        x = np.arange(len(cycles))
+        bar_width = 0.35
+
+        ax1, ax2, ax3 = fig.subplots(
+            3, 1, sharex=True,
+            gridspec_kw={"height_ratios": [1, 1, 1]},
+        )
+
+        ax1.bar(x - bar_width / 2, g1_counts, bar_width, color="tab:blue",
+                label=f"{label1} (G1)")
+        ax1.bar(x + bar_width / 2, g2_counts, bar_width, color="tab:orange",
+                label=f"{label2} (G2)")
+        ax1.set_ylabel("Total Particle Count")
+        ax1.set_title("Total Particle Count per Group per Cycle")
+        ax1.legend(fontsize=8)
+        ax1.grid(axis="y", alpha=0.3)
+
+        ax2.bar(x, ratios_g1_g2, 0.5, color="tab:green")
+        ax2.axhline(y=1.0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+        ax2.set_ylabel(f"Ratio ({label1} / {label2})")
+        ax2.set_title(f"Particle Count Ratio ({label1} / {label2}) per Cycle")
+        ax2.grid(axis="y", alpha=0.3)
+
+        ax3.bar(x, ratios_g2_g1, 0.5, color="tab:red")
+        ax3.axhline(y=1.0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+        ax3.set_ylabel(f"Ratio ({label2} / {label1})")
+        ax3.set_xlabel("Cycle")
+        ax3.set_title(f"Particle Count Ratio ({label2} / {label1}) per Cycle")
+        ax3.set_xticks(x)
+        ax3.set_xticklabels([str(c) for c in cycles])
+        ax3.grid(axis="y", alpha=0.3)
+
         self._style_figure(fig)
