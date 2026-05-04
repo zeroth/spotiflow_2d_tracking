@@ -10,6 +10,12 @@ from matplotlib.backends.backend_qtagg import (
 from matplotlib.figure import Figure
 from qtpy.QtGui import QIntValidator
 
+from napari_spotiflow_tracking._mpl_theme import (
+    LINE_COLOR as _SHARED_LINE_COLOR,
+    NAPARI_BG as _SHARED_BG,
+    NAPARI_FG as _SHARED_FG,
+    style_figure,
+)
 from napari_spotiflow_tracking._papa_analysis import (
     annotate_with_cycle_group,
     build_cycle_info,
@@ -279,27 +285,13 @@ class PAPAWidget(QWidget):
 
         self._tabs.setCurrentWidget(self._plots_tab)
 
-    NAPARI_BG = "#262930"
-    NAPARI_FG = "#d6d6d6"
-    LINE_COLOR = "#e0e0e0"
+    NAPARI_BG = _SHARED_BG
+    NAPARI_FG = _SHARED_FG
+    LINE_COLOR = _SHARED_LINE_COLOR
 
     @classmethod
     def _style_figure(cls, fig):
-        fig.patch.set_facecolor(cls.NAPARI_BG)
-        for ax in fig.axes:
-            ax.set_facecolor(cls.NAPARI_BG)
-            for spine in ax.spines.values():
-                spine.set_color(cls.NAPARI_FG)
-            ax.tick_params(colors=cls.NAPARI_FG)
-            ax.xaxis.label.set_color(cls.NAPARI_FG)
-            ax.yaxis.label.set_color(cls.NAPARI_FG)
-            ax.title.set_color(cls.NAPARI_FG)
-            legend = ax.get_legend()
-            if legend is not None:
-                legend.get_frame().set_facecolor(cls.NAPARI_BG)
-                legend.get_frame().set_edgecolor(cls.NAPARI_FG)
-                for text in legend.get_texts():
-                    text.set_color(cls.NAPARI_FG)
+        style_figure(fig)
 
     def _render_combined_plot(
         self, fig, per_frame, cycle_info, max_time,
