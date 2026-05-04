@@ -22,6 +22,8 @@ class PAPAWidget(QWidget):
         self.viewer = napari_viewer
         self._last_per_frame_df = None
         self._setup_ui()
+        self._connect_events()
+        self._refresh_points_combo()
 
     def _setup_ui(self):
         outer = QVBoxLayout()
@@ -50,6 +52,7 @@ class PAPAWidget(QWidget):
         refresh_btn = QPushButton("↻")
         refresh_btn.setFixedWidth(30)
         refresh_btn.setToolTip("Refresh layer list")
+        refresh_btn.clicked.connect(self._refresh_points_combo)
         row.addWidget(refresh_btn)
         input_layout.addLayout(row)
         input_group.setLayout(input_layout)
@@ -123,3 +126,20 @@ class PAPAWidget(QWidget):
         scroll.setWidget(inner)
         self._plots_inner = inner
         return scroll
+
+    def _connect_events(self):
+        self.viewer.layers.events.inserted.connect(self._on_layer_change)
+        self.viewer.layers.events.removed.connect(self._on_layer_change)
+
+    def _on_layer_change(self, event=None):
+        self._refresh_points_combo()
+
+    def _refresh_points_combo(self):
+        prev = self._points_combo.currentText()
+        self._points_combo.clear()
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Points):
+                self._points_combo.addItem(layer.name)
+        idx = self._points_combo.findText(prev)
+        if idx >= 0:
+            self._points_combo.setCurrentIndex(idx)

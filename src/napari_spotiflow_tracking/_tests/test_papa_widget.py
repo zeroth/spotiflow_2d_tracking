@@ -41,3 +41,45 @@ class TestPAPAWidgetConstruction:
     def test_initial_status_message(self, papa_widget):
         widget, _ = papa_widget
         assert "Ready" in widget._status_label.text()
+
+
+import napari
+import napari.layers
+
+
+class TestPAPAWidgetLayerCombo:
+    def test_combo_starts_empty(self, papa_widget):
+        widget, _ = papa_widget
+        assert widget._points_combo.count() == 0
+
+    def test_combo_lists_points_layers(self, papa_widget):
+        widget, viewer = papa_widget
+        viewer.add_points(np.array([[0, 10, 20], [1, 11, 21]]), name="spots")
+        assert widget._points_combo.count() == 1
+        assert widget._points_combo.itemText(0) == "spots"
+
+    def test_combo_ignores_image_layers(self, papa_widget):
+        widget, viewer = papa_widget
+        viewer.add_image(np.random.rand(64, 64), name="img")
+        assert widget._points_combo.count() == 0
+
+    def test_combo_updates_on_layer_remove(self, papa_widget):
+        widget, viewer = papa_widget
+        viewer.add_points(np.array([[0, 10, 20]]), name="spots")
+        assert widget._points_combo.count() == 1
+        viewer.layers.remove("spots")
+        assert widget._points_combo.count() == 0
+
+    def test_manual_refresh_button_works(self, papa_widget):
+        widget, viewer = papa_widget
+        viewer.add_points(np.array([[0, 10, 20]]), name="spots")
+        widget._points_combo.clear()
+        # Walk children to find the refresh button: it's the only push
+        # button with text "↻".
+        from qtpy.QtWidgets import QPushButton
+        refresh_btns = [
+            b for b in widget.findChildren(QPushButton) if b.text() == "↻"
+        ]
+        assert len(refresh_btns) == 1
+        refresh_btns[0].click()
+        assert widget._points_combo.count() == 1
