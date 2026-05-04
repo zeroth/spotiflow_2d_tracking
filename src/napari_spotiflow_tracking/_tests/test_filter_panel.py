@@ -395,3 +395,79 @@ class TestHistogram:
         # At least the intensity patches are gone, area still there
         assert n_patches_after < n_patches_before
         assert n_patches_after > 0  # area still drawn
+
+
+class TestSiblingLayerPoints:
+    def test_checkbox_unchecked_no_sibling(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0, 1],
+            "frame": [0, 1],
+            "y": [10.0, 20.0],
+            "x": [10.0, 20.0],
+            "intensity": [1.0, 2.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        # Default unchecked
+        assert panel._show_filtered_cb.isChecked() is False
+        assert all("(filtered)" not in l.name for l in viewer.layers)
+
+    def test_check_creates_sibling(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0, 1, 2],
+            "frame": [0, 1, 2],
+            "y": [10.0, 20.0, 30.0],
+            "x": [10.0, 20.0, 30.0],
+            "intensity": [10.0, 20.0, 30.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        panel._show_filtered_cb.setChecked(True)
+        names = [l.name for l in viewer.layers]
+        assert "spots (filtered)" in names
+
+    def test_filter_shrinks_sibling_data(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0, 1, 2, 3, 4],
+            "frame": [0, 1, 2, 3, 4],
+            "y": [0.0] * 5,
+            "x": [0.0] * 5,
+            "intensity": [10.0, 20.0, 30.0, 40.0, 50.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        panel._show_filtered_cb.setChecked(True)
+        panel._sliders["intensity"].setValue((25.0, 45.0))
+        panel._refresh()
+        sibling = viewer.layers["spots (filtered)"]
+        assert len(sibling.data) == 2
+
+    def test_uncheck_removes_sibling(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0, 1],
+            "frame": [0, 1],
+            "y": [0.0, 0.0],
+            "x": [0.0, 0.0],
+            "intensity": [10.0, 20.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        panel._show_filtered_cb.setChecked(True)
+        assert "spots (filtered)" in [l.name for l in viewer.layers]
+        panel._show_filtered_cb.setChecked(False)
+        assert "spots (filtered)" not in [l.name for l in viewer.layers]
+
+    def test_source_removed_removes_sibling(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0],
+            "frame": [0],
+            "y": [0.0],
+            "x": [0.0],
+            "intensity": [10.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        panel._show_filtered_cb.setChecked(True)
+        assert "spots (filtered)" in [l.name for l in viewer.layers]
+        viewer.layers.remove("spots")
+        assert "spots (filtered)" not in [l.name for l in viewer.layers]

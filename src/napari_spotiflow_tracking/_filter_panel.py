@@ -190,6 +190,13 @@ class FilterPanel(QWidget):
         sel_model = self._table_view.selectionModel()
         sel_model.currentRowChanged.connect(self._on_table_selection_changed)
 
+        self._show_filtered_cb = QCheckBox("Show filtered in viewer")
+        self._show_filtered_cb.setChecked(False)
+        self._show_filtered_cb.toggled.connect(self._on_show_filtered_toggled)
+        layout.addWidget(self._show_filtered_cb)
+
+        self._sibling_layer = None
+
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
 
@@ -218,7 +225,20 @@ class FilterPanel(QWidget):
         self._viewer.layers.events.removed.connect(self._on_layer_event)
 
     def _on_layer_event(self, event=None):
+        self._check_source_removed()
         self._refresh_layer_combo()
+
+    def _check_source_removed(self):
+        if self._source_layer is None:
+            return
+        try:
+            still_in_viewer = self._source_layer in self._viewer.layers
+        except Exception:
+            still_in_viewer = False
+        if not still_in_viewer:
+            self._remove_sibling_layer()
+            self._source_layer = None
+            self._source_df = None
 
     def _refresh_layer_combo(self):
         prev = self._layer_combo.currentText()
@@ -388,6 +408,8 @@ class FilterPanel(QWidget):
         self._status_label.setText(f"{n_filtered} / {n_total} rows match")
 
         self._redraw_histogram(filtered=filtered)
+        if self._show_filtered_cb.isChecked():
+            self._update_sibling_layer(filtered)
 
     def _on_table_selection_changed(self, current, previous):
         if not current.isValid():
@@ -469,3 +491,54 @@ class FilterPanel(QWidget):
             ax.legend(loc="upper right", fontsize=8)
         style_figure(self._hist_fig)
         self._hist_canvas.draw_idle()
+
+    def _on_show_filtered_toggled(self, checked: bool):
+        if not checked:
+            self._remove_sibling_layer()
+            return
+        if self._source_df is None:
+            return
+        mask = pd.Series(True, index=self._source_df.index)
+        for col, (lo, hi) in self._filter_ranges.items():
+            mask &= (self._source_df[col] >= lo) & (self._source_df[col] <= hi)
+        filtered = self._source_df[mask].reset_index(drop=True)
+        self._update_sibling_layer(filtered)
+
+    def _sibling_name(self) -> str:
+        if self._source_layer is None:
+            return ""
+        return f"{self._source_layer.name} (filtered)"
+
+    def _remove_sibling_layer(self):
+        name = self._sibling_name()
+        if not name:
+            return
+        if name in self._viewer.layers:
+            try:
+                self._viewer.layers.remove(name)
+            except (KeyError, ValueError):
+                pass
+        self._sibling_layer = None
+
+    def _update_sibling_layer(self, filtered: pd.DataFrame):
+        if self._source_layer is None:
+            return
+        name = self._sibling_name()
+        if self._layer_kind == "Points":
+            if "frame" in filtered.columns:
+                data = filtered[["frame", "y", "x"]].to_numpy()
+            else:
+                data = filtered[["y", "x"]].to_numpy()
+            if name in self._viewer.layers:
+                self._viewer.layers[name].data = data
+                self._sibling_layer = self._viewer.layers[name]
+            else:
+                self._sibling_layer = self._viewer.add_points(
+                    data, name=name, size=3, face_color="cyan",
+                )
+        elif self._layer_kind == "Tracks":
+            self._update_tracks_sibling(filtered, name)
+
+    def _update_tracks_sibling(self, filtered: pd.DataFrame, name: str):
+        # Implemented in Task 10
+        pass
