@@ -12,6 +12,7 @@ dependencies = [
     "numpy",
     "spotiflow>=0.6.0",
     "qtpy",
+    "superqt",
     "pandas",
     "trackpy",
     "matplotlib",
