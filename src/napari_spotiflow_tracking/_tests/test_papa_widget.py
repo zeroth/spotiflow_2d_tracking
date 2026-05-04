@@ -239,3 +239,47 @@ class TestPAPAWidgetTheming:
         assert widget._fig_ratio.get_facecolor() == expected
         for ax in widget._fig_ratio.axes:
             assert ax.get_facecolor() == expected
+
+
+class TestPAPAWidgetExportCSV:
+    def _make_synthetic_layer(self, viewer):
+        rows = [[f, 10.0, 10.0] for f in range(12) for _ in range(3)]
+        viewer.add_points(np.array(rows), name="spots")
+
+    def test_export_writes_csv(self, papa_widget, tmp_path, monkeypatch):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer)
+        widget._plot_btn.click()
+
+        out_path = tmp_path / "papa.csv"
+        from qtpy.QtWidgets import QFileDialog
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            lambda *a, **kw: (str(out_path), "CSV files (*.csv)"),
+        )
+        widget._export_btn.click()
+
+        assert out_path.exists()
+        df = pd.read_csv(out_path)
+        assert list(df.columns) == ["frame", "n_particles", "cycle", "group"]
+        # Frames are 1-indexed.
+        assert df["frame"].min() == 1
+        # Skip-gap frame (6) should be present with NaN cycle/group and
+        # n_particles == 3 (the layer has 3 spots on every frame).
+        skip_row = df[df["frame"] == 6].iloc[0]
+        assert pd.isna(skip_row["cycle"])
+        assert pd.isna(skip_row["group"])
+        assert int(skip_row["n_particles"]) == 3
+
+    def test_export_cancel_does_nothing(self, papa_widget, monkeypatch):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer)
+        widget._plot_btn.click()
+
+        from qtpy.QtWidgets import QFileDialog
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            lambda *a, **kw: ("", ""),
+        )
+        # Should not raise.
+        widget._export_btn.click()

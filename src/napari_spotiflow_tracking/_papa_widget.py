@@ -17,6 +17,7 @@ from napari_spotiflow_tracking._papa_analysis import (
 )
 from qtpy.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -122,6 +123,7 @@ class PAPAWidget(QWidget):
 
         self._export_btn = QPushButton("Export CSV")
         self._export_btn.setEnabled(False)
+        self._export_btn.clicked.connect(self._on_export_clicked)
         layout.addWidget(self._export_btn)
 
         self._status_label = QLabel("Ready. Set parameters and click Plot.")
@@ -406,3 +408,21 @@ class PAPAWidget(QWidget):
         ax3.grid(axis="y", alpha=0.3)
 
         self._style_figure(fig)
+
+    def _on_export_clicked(self):
+        if self._last_per_frame_df is None or len(self._last_per_frame_df) == 0:
+            self._set_status_error("No data to export. Click Plot first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save particles CSV", "", "CSV files (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            self._last_per_frame_df.to_csv(path, index=False)
+        except OSError as exc:
+            self._set_status_error(f"Failed to write CSV: {exc}")
+            return
+        msg = f"Exported {len(self._last_per_frame_df)} rows to {path}"
+        self._status_label.setText(msg)
+        show_info(msg)
