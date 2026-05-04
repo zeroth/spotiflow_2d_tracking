@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from napari_spotiflow_tracking._papa_analysis import (
+    annotate_with_cycle_group,
     build_cycle_info,
     compute_particles_per_frame,
 )
@@ -116,3 +117,46 @@ class TestBuildCycleInfo:
             {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 3},
             {"cycle": 1, "group": 2, "start_frame": 4, "end_frame": 6},
         ]
+
+
+class TestAnnotateWithCycleGroup:
+    def test_assigns_cycle_and_group(self):
+        per_frame = pd.DataFrame({
+            "frame": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            "n_particles": [0] * 12,
+        })
+        cycle_info = [
+            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 5},
+            {"cycle": 1, "group": 2, "start_frame": 7, "end_frame": 11},
+        ]
+        out = annotate_with_cycle_group(per_frame, cycle_info)
+
+        # Frames 1-5 -> cycle 1 group 1; frame 6 -> NaN/NaN (skip gap);
+        # frames 7-11 -> cycle 1 group 2; frame 12 -> NaN/NaN.
+        expected_cycle = [1, 1, 1, 1, 1, pd.NA, 1, 1, 1, 1, 1, pd.NA]
+        expected_group = [1, 1, 1, 1, 1, pd.NA, 2, 2, 2, 2, 2, pd.NA]
+        assert out["cycle"].tolist() == expected_cycle
+        assert out["group"].tolist() == expected_group
+        # Original columns preserved.
+        assert out["frame"].tolist() == per_frame["frame"].tolist()
+        assert out["n_particles"].tolist() == per_frame["n_particles"].tolist()
+
+    def test_does_not_mutate_input(self):
+        per_frame = pd.DataFrame({"frame": [1, 2], "n_particles": [0, 0]})
+        cycle_info = [{"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 2}]
+        _ = annotate_with_cycle_group(per_frame, cycle_info)
+        assert "cycle" not in per_frame.columns
+        assert "group" not in per_frame.columns
+
+    def test_empty_cycle_info(self):
+        per_frame = pd.DataFrame({"frame": [1, 2, 3], "n_particles": [0, 0, 0]})
+        out = annotate_with_cycle_group(per_frame, [])
+        assert out["cycle"].isna().all()
+        assert out["group"].isna().all()
+
+    def test_uses_nullable_int64_dtype(self):
+        per_frame = pd.DataFrame({"frame": [1, 2], "n_particles": [0, 0]})
+        cycle_info = [{"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 2}]
+        out = annotate_with_cycle_group(per_frame, cycle_info)
+        assert str(out["cycle"].dtype) == "Int64"
+        assert str(out["group"].dtype) == "Int64"

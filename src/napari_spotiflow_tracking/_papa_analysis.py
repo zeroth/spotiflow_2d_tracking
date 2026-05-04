@@ -102,4 +102,18 @@ def annotate_with_cycle_group(
     Frames falling in skip-gap regions receive ``NaN`` in both columns.
     Returns a new DataFrame; does not mutate the input.
     """
-    raise NotImplementedError
+    out = per_frame.copy()
+    cycle_col = pd.array([pd.NA] * len(out), dtype="Int64")
+    group_col = pd.array([pd.NA] * len(out), dtype="Int64")
+
+    frame_to_idx = {int(f): i for i, f in enumerate(out["frame"].tolist())}
+    for info in cycle_info:
+        for f in range(info["start_frame"], info["end_frame"] + 1):
+            i = frame_to_idx.get(f)
+            if i is not None:
+                cycle_col[i] = info["cycle"]
+                group_col[i] = info["group"]
+
+    out["cycle"] = cycle_col
+    out["group"] = group_col
+    return out
