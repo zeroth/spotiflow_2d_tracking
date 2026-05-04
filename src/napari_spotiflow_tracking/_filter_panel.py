@@ -7,17 +7,86 @@ from typing import Literal
 import napari
 import napari.layers
 import pandas as pd
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QSortFilterProxyModel,
+    Qt,
+    QTimer,
+    QVariant,
+    Signal,
+)
 from qtpy.QtWidgets import (
     QComboBox,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
+    QTableView,
     QVBoxLayout,
     QWidget,
 )
 from superqt import QLabeledDoubleRangeSlider, QLabeledRangeSlider
+
+
+class _PropertyTableModel(QAbstractTableModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._df: pd.DataFrame = pd.DataFrame()
+
+    def setDataFrame(self, df: pd.DataFrame):
+        self.beginResetModel()
+        self._df = df.reset_index(drop=True).copy()
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._df)
+
+    def columnCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else self._df.shape[1]
+
+    def data(self, index: QModelIndex, role=Qt.DisplayRole):
+        if not index.isValid():
+            return QVariant()
+        if role == Qt.DisplayRole:
+            return str(self._df.iat[index.row(), index.column()])
+        if role == Qt.UserRole + 1:
+            return float(self._df.iat[index.row(), index.column()])
+        return QVariant()
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole:
+            return QVariant()
+        if orientation == Qt.Horizontal:
+            if 0 <= section < self._df.shape[1]:
+                return str(self._df.columns[section])
+        return str(section)
+
+
+class _PropertyTableProxy(QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._ranges: dict = {}
+
+    def setRanges(self, ranges: dict):
+        self._ranges = dict(ranges)
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        model = self.sourceModel()
+        if model is None or not self._ranges:
+            return True
+        for col, (lo, hi) in self._ranges.items():
+            col_idx = list(model._df.columns).index(col)
+            val = model._df.iat[source_row, col_idx]
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                continue
+            if v < lo or v > hi:
+                return False
+        return True
 
 
 class FilterPanel(QWidget):
@@ -74,8 +143,28 @@ class FilterPanel(QWidget):
         layout.addWidget(sliders_group)
         self._sliders_group = sliders_group
 
+        self._table_model = _PropertyTableModel(self)
+        self._proxy = _PropertyTableProxy(self)
+        self._proxy.setSourceModel(self._table_model)
+        self._table_view = QTableView()
+        self._table_view.setModel(self._proxy)
+        self._table_view.setSelectionMode(QTableView.SingleSelection)
+        self._table_view.setSelectionBehavior(QTableView.SelectRows)
+        self._table_view.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents
+        )
+        layout.addWidget(self._table_view)
+
+        sel_model = self._table_view.selectionModel()
+        sel_model.currentRowChanged.connect(self._on_table_selection_changed)
+
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
+
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(150)
+        self._refresh_timer.timeout.connect(self._refresh)
 
         self._sliders: dict = {}
         self._constant_labels: dict = {}
@@ -136,6 +225,8 @@ class FilterPanel(QWidget):
         self._source_df = props.copy()
         self._sliders_group.setVisible(True)
         self._build_sliders(props)
+        self._table_model.setDataFrame(props)
+        self._proxy.setRanges({})
         self._update_status()
 
     def _clear_sliders(self):
@@ -193,6 +284,9 @@ class FilterPanel(QWidget):
             self._sliders_layout.addWidget(container)
             self._sliders[col] = slider
             self._filter_ranges[col] = (col_min, col_max)
+            slider.valueChanged.connect(
+                lambda v, c=col: self._on_slider_changed(c, v)
+            )
 
     def _update_status(self):
         if self._layer_combo.count() == 0:
@@ -208,3 +302,34 @@ class FilterPanel(QWidget):
         else:
             n_total = len(self._source_df)
             self._status_label.setText(f"{n_total} / {n_total} rows match")
+
+    def _on_slider_changed(self, col: str, value):
+        lo, hi = value
+        self._filter_ranges[col] = (lo, hi)
+        self._refresh_timer.start()
+
+    def _refresh(self):
+        if self._source_df is None or len(self._sliders) == 0:
+            self._update_status()
+            return
+
+        mask = pd.Series(True, index=self._source_df.index)
+        for col, (lo, hi) in self._filter_ranges.items():
+            mask &= (self._source_df[col] >= lo) & (self._source_df[col] <= hi)
+        filtered = self._source_df[mask].reset_index(drop=True)
+
+        self._proxy.setRanges(self._filter_ranges)
+
+        n_filtered = len(filtered)
+        n_total = len(self._source_df)
+        self._status_label.setText(f"{n_filtered} / {n_total} rows match")
+
+    def _on_table_selection_changed(self, current, previous):
+        if not current.isValid():
+            return
+        source_index = self._proxy.mapToSource(current)
+        if not source_index.isValid():
+            return
+        col_idx = list(self._table_model._df.columns).index(self._id_column)
+        row_id = int(self._table_model._df.iat[source_index.row(), col_idx])
+        self.selectionChanged.emit(row_id)

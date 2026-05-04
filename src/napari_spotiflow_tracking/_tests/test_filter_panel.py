@@ -168,3 +168,81 @@ class TestSliderGeneration:
         })
         _add_points_with_props(viewer, "spots", df)
         assert isinstance(panel._sliders["intensity"], QLabeledDoubleRangeSlider)
+
+
+class TestFilterPipeline:
+    def test_initial_table_shows_all_rows(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": list(range(5)),
+            "frame": list(range(5)),
+            "y": [0.0] * 5,
+            "x": [0.0] * 5,
+            "intensity": [10.0, 20.0, 30.0, 40.0, 50.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        assert panel._proxy.rowCount() == 5
+
+    def test_slider_range_filters_rows(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": list(range(5)),
+            "frame": list(range(5)),
+            "y": [0.0] * 5,
+            "x": [0.0] * 5,
+            "intensity": [10.0, 20.0, 30.0, 40.0, 50.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        # Set intensity range to [25, 45] -> rows with 30 and 40 match -> 2 rows
+        panel._sliders["intensity"].setValue((25.0, 45.0))
+        panel._refresh()  # bypass debounce
+        assert panel._proxy.rowCount() == 2
+
+    def test_filter_status_label(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": list(range(10)),
+            "frame": list(range(10)),
+            "y": [0.0] * 10,
+            "x": [0.0] * 10,
+            "intensity": list(np.linspace(0, 100, 10)),
+        })
+        _add_points_with_props(viewer, "spots", df)
+        panel._sliders["intensity"].setValue((50.0, 100.0))
+        panel._refresh()
+        # 5 of 10 rows have intensity >= 50
+        assert "5 / 10" in panel._status_label.text()
+
+    def test_table_columns_match_source_df(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0, 1],
+            "frame": [0, 1],
+            "y": [0.0, 0.0],
+            "x": [0.0, 0.0],
+            "intensity": [10.0, 20.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        model = panel._table_model
+        assert model.columnCount() == len(df.columns)
+
+    def test_selection_changed_signal_emits_id(self, filter_panel_points, qtbot):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [10, 20, 30],
+            "frame": [0, 1, 2],
+            "y": [0.0] * 3,
+            "x": [0.0] * 3,
+            "intensity": [1.0, 2.0, 3.0],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        # Select the second row in the proxy
+        with qtbot.waitSignal(panel.selectionChanged, timeout=500) as blocker:
+            proxy_index = panel._proxy.index(1, 0)
+            panel._table_view.selectionModel().select(
+                proxy_index,
+                panel._table_view.selectionModel().Select
+                | panel._table_view.selectionModel().Rows,
+            )
+            panel._on_table_selection_changed(proxy_index, proxy_index)
+        assert blocker.args == [20]
