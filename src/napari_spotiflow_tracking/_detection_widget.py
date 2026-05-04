@@ -494,7 +494,7 @@ class DetectionWidget(QWidget):
             self._pbr.n = current
             self._pbr.refresh()
 
-    def _on_detection_finished(self, points: np.ndarray, masks):
+    def _on_detection_finished(self, points: np.ndarray, masks, intensities=None):
         if self._pbr is not None:
             self._pbr.close()
             self._pbr = None
@@ -508,13 +508,33 @@ class DetectionWidget(QWidget):
         self._status_label.setText(f"Detected {n_spots} spots.")
         show_info(f"Done — detected {n_spots} spots.")
 
+        if intensities is None:
+            intensities = np.zeros(n_spots, dtype=float)
+
         if n_spots > 0:
-            self.viewer.add_points(
+            new_layer = self.viewer.add_points(
                 points,
                 name="Detected Spots",
                 size=3,
                 face_color="red",
             )
+            spot_id = np.arange(n_spots, dtype=int)
+            if points.shape[1] == 3:
+                df = pd.DataFrame({
+                    "spot_id": spot_id,
+                    "frame": points[:, 0].astype(int),
+                    "y": points[:, 1].astype(float),
+                    "x": points[:, 2].astype(float),
+                    "intensity": np.asarray(intensities, dtype=float),
+                })
+            else:
+                df = pd.DataFrame({
+                    "spot_id": spot_id,
+                    "y": points[:, 0].astype(float),
+                    "x": points[:, 1].astype(float),
+                    "intensity": np.asarray(intensities, dtype=float),
+                })
+            new_layer.metadata["properties"] = df
         if masks is not None:
             self.viewer.add_labels(masks, name="Spot Masks", opacity=0.4)
 

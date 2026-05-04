@@ -7,7 +7,7 @@ from qtpy.QtCore import QThread, Signal
 
 from napari_spotiflow_tracking._fitting import fit_and_mask_2d
 from napari_spotiflow_tracking._preprocessing import remove_background_high_pass
-from napari_spotiflow_tracking._segmentation import detect_spots, detect_spots_log
+from napari_spotiflow_tracking._segmentation import detect_spots, detect_spots_log, sample_point_intensities
 
 
 class DetectionWorker(QThread):
@@ -18,7 +18,7 @@ class DetectionWorker(QThread):
     """
 
     progress = Signal(str, int, int)  # (stage, current, total)
-    finished = Signal(object, object)  # (all_points, all_masks)
+    finished = Signal(object, object, object)  # (all_points, all_masks, all_intensities)
     errored = Signal(str)
 
     def __init__(
@@ -63,11 +63,15 @@ class DetectionWorker(QThread):
             frame_image = remove_background_high_pass(frame_image, sigma=self._bg_sigma)
 
         if self._method == "spotiflow":
-            points, _ = detect_spots(
+            points, details = detect_spots(
                 frame_image, self._model,
                 prob_thresh=self._prob_thresh,
                 min_distance=self._min_distance,
             )
+            try:
+                intens = np.asarray(details.intens, dtype=float).ravel()
+            except AttributeError:
+                intens = sample_point_intensities(frame_image, points)
         else:
             points = detect_spots_log(
                 frame_image,
@@ -76,6 +80,7 @@ class DetectionWorker(QThread):
                 num_sigma=self._log_num_sigma,
                 threshold=self._log_threshold,
             )
+            intens = sample_point_intensities(frame_image, points)
 
         if self._generate_mask:
             result = fit_and_mask_2d(
@@ -84,41 +89,45 @@ class DetectionWorker(QThread):
                 fallback_radius=self._fallback_radius,
                 backend=self._fit_backend,
             )
-            return points, result.mask
-        return points, None
+            return points, result.mask, intens
+        return points, None, intens
 
     def run(self):
         try:
             if self._image.ndim == 2:
                 self.progress.emit("Detecting spots", 0, 1)
-                points, mask = self._process_frame(self._image)
+                points, mask, intens = self._process_frame(self._image)
                 self.progress.emit("Detecting spots", 1, 1)
-                self.finished.emit(points, mask)
+                self.finished.emit(points, mask, intens)
 
             elif self._image.ndim == 3:
                 n_frames = self._image.shape[0]
                 all_points = []
                 all_masks = []
+                all_intens = []
 
                 for t in range(n_frames):
                     self.progress.emit("Detecting spots", t + 1, n_frames)
-                    points, mask = self._process_frame(self._image[t])
+                    points, mask, intens = self._process_frame(self._image[t])
 
                     if len(points) > 0:
                         frame_col = np.full((len(points), 1), t)
                         points_with_frame = np.hstack([frame_col, points])
                         all_points.append(points_with_frame)
+                        all_intens.append(intens)
 
                     if mask is not None:
                         all_masks.append(mask)
 
                 if all_points:
                     combined_points = np.vstack(all_points)
+                    combined_intens = np.concatenate(all_intens)
                 else:
                     combined_points = np.empty((0, 3))
+                    combined_intens = np.empty((0,))
                 combined_masks = np.stack(all_masks, axis=0) if all_masks else None
 
-                self.finished.emit(combined_points, combined_masks)
+                self.finished.emit(combined_points, combined_masks, combined_intens)
             else:
                 self.errored.emit(
                     f"Expected 2D or 3D (T,Y,X) image, got ndim={self._image.ndim}"

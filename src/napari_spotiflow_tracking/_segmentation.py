@@ -22,7 +22,7 @@ def load_model(model_name: str, device: str = "cpu"):
 def detect_spots(
     image_2d: np.ndarray,
     model,
-    prob_thresh: float | None = 0.5,
+    prob_thresh: float | None,
     min_distance: int = 2,
 ) -> tuple[np.ndarray, object]:
     """Detect spots in a single 2D image using a loaded Spotiflow model.
@@ -66,3 +66,12 @@ def detect_spots_log(
         return np.empty((0, 2))
     # blob_log returns [y, x, sigma] — return only [y, x]
     return blobs[:, :2]
+
+
+def sample_point_intensities(image_2d: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """Sample image intensity at each point's nearest integer coords."""
+    if len(points) == 0:
+        return np.empty((0,), dtype=float)
+    ys = np.clip(np.rint(points[:, 0]).astype(int), 0, image_2d.shape[0] - 1)
+    xs = np.clip(np.rint(points[:, 1]).astype(int), 0, image_2d.shape[1] - 1)
+    return image_2d[ys, xs].astype(float)
