@@ -282,15 +282,11 @@ class FilterPanel(QWidget):
             row.addWidget(QLabel(col))
             if pd.api.types.is_integer_dtype(df[col]):
                 slider = QLabeledRangeSlider(Qt.Horizontal)
-                # Allow wider range for filtering outside data bounds
-                margin = max(abs(int(col_min)), abs(int(col_max))) * 10 + 1000
-                slider.setRange(int(col_min) - margin, int(col_max) + margin)
+                slider.setRange(int(col_min), int(col_max))
                 slider.setValue((int(col_min), int(col_max)))
             else:
                 slider = QLabeledDoubleRangeSlider(Qt.Horizontal)
-                # Allow wider range for filtering outside data bounds
-                margin = max(col_max - col_min, 1.0) * 10
-                slider.setRange(float(col_min) - margin, float(col_max) + margin)
+                slider.setRange(float(col_min), float(col_max))
                 slider.setValue((float(col_min), float(col_max)))
             row.addWidget(slider)
             container = QWidget()

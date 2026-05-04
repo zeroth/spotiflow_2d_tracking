@@ -307,7 +307,9 @@ class TestResetAndExport:
             "intensity": [10.0, 20.0],
         })
         _add_points_with_props(viewer, "spots", df)
-        panel._sliders["intensity"].setValue((100.0, 200.0))  # no rows match
+        # Bypass the slider (its range is clamped to [10, 20]); set
+        # _filter_ranges directly to a range that excludes all rows.
+        panel._filter_ranges["intensity"] = (100.0, 200.0)
         panel._refresh()
 
         out_path = tmp_path / "empty.csv"
