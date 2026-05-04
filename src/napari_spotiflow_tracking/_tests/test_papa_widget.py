@@ -213,3 +213,29 @@ class TestPAPAWidgetRatioPlot:
         titles = [ax.get_title() for ax in widget._fig_ratio.axes]
         assert "DR / PAPA" in titles[1]
         assert "PAPA / DR" in titles[2]
+
+
+class TestPAPAWidgetTheming:
+    def _make_synthetic_layer(self, viewer):
+        rows = [[f, 10.0, 10.0] for f in range(12) for _ in range(3)]
+        viewer.add_points(np.array(rows), name="spots")
+
+    def test_combined_figure_uses_dark_facecolor(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer)
+        widget._plot_btn.click()
+        from matplotlib.colors import to_rgba
+        expected = to_rgba(widget.NAPARI_BG)
+        assert widget._fig_combined.get_facecolor() == expected
+        for ax in widget._fig_combined.axes:
+            assert ax.get_facecolor() == expected
+
+    def test_ratio_figure_uses_dark_facecolor(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer)
+        widget._plot_btn.click()
+        from matplotlib.colors import to_rgba
+        expected = to_rgba(widget.NAPARI_BG)
+        assert widget._fig_ratio.get_facecolor() == expected
+        for ax in widget._fig_ratio.axes:
+            assert ax.get_facecolor() == expected
