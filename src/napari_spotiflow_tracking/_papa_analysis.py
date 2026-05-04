@@ -24,7 +24,32 @@ def compute_particles_per_frame(points: np.ndarray) -> tuple[pd.DataFrame, int]:
         (clipped to 0 before the +1 shift). Caller may surface this as a
         warning.
     """
-    raise NotImplementedError
+    points = np.asarray(points)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points must have shape (N, 3) with columns (frame, y, x)")
+
+    raw_frames = np.rint(points[:, 0]).astype(int)
+    n_negative_clipped = int((raw_frames < 0).sum())
+    frames_0idx = np.clip(raw_frames, 0, None)
+    frames_1idx = frames_0idx + 1
+
+    if frames_1idx.size == 0:
+        per_frame = pd.DataFrame({"frame": [], "n_particles": []}).astype(int)
+        return per_frame, n_negative_clipped
+
+    counts = (
+        pd.Series(frames_1idx)
+        .value_counts()
+        .sort_index()
+    )
+    max_frame = int(frames_1idx.max())
+    full_index = pd.Index(range(1, max_frame + 1), name="frame")
+    counts = counts.reindex(full_index, fill_value=0).astype(int)
+
+    per_frame = counts.reset_index()
+    per_frame.columns = ["frame", "n_particles"]
+    per_frame["frame"] = per_frame["frame"].astype(int)
+    return per_frame, n_negative_clipped
 
 
 def build_cycle_info(
