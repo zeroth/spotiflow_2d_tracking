@@ -99,3 +99,26 @@ class TestMaskGenMerge:
         assert "spot_id" in out.columns
         assert "area" in out.columns
         assert out["area"].iloc[0] == 42
+
+
+class TestDetectionFilterPanelEmbedded:
+    def test_widget_has_filter_panel(self, detection_widget):
+        widget, viewer = detection_widget
+        from napari_spotiflow_tracking._filter_panel import FilterPanel
+        panels = widget.findChildren(FilterPanel)
+        assert len(panels) == 1
+        assert panels[0]._layer_kind == "Points"
+        assert panels[0]._id_column == "spot_id"
+
+    def test_filter_panel_picks_up_detected_layer(self, detection_widget):
+        widget, viewer = detection_widget
+        points = np.array([[0, 5.0, 5.0], [1, 6.0, 6.0]])
+        intensities = np.array([10.0, 20.0])
+        widget._on_detection_finished(points, None, intensities)
+
+        from napari_spotiflow_tracking._filter_panel import FilterPanel
+        panel = widget.findChildren(FilterPanel)[0]
+        # Manually force layer combo refresh (in tests events may be eager)
+        panel._refresh_layer_combo()
+        panel._on_layer_changed("Detected Spots")
+        assert "intensity" in panel._sliders

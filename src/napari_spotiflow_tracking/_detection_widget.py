@@ -18,6 +18,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -25,6 +26,7 @@ from qtpy.QtWidgets import (
 
 from napari_spotiflow_tracking._segmentation import load_model
 from napari_spotiflow_tracking._workers import DetectionWorker, MaskGenerationWorker
+from napari_spotiflow_tracking._filter_panel import FilterPanel
 
 
 class DetectionWidget(QWidget):
@@ -40,8 +42,17 @@ class DetectionWidget(QWidget):
         self._connect_events()
 
     def _setup_ui(self):
+        outer_layout = QVBoxLayout()
+        self.setLayout(outer_layout)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        outer_layout.addWidget(scroll)
+
+        inner = QWidget()
         layout = QVBoxLayout()
-        self.setLayout(layout)
+        inner.setLayout(layout)
+        scroll.setWidget(inner)
 
         # Input image
         input_group = QGroupBox("Input")
@@ -231,6 +242,10 @@ class DetectionWidget(QWidget):
         # Status
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
+
+        # Embedded property filter
+        self._filter_panel = FilterPanel(self.viewer, "Points", "spot_id", parent=self)
+        layout.addWidget(self._filter_panel)
 
         layout.addStretch()
         self._refresh_image_combo()
