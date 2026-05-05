@@ -13,12 +13,15 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from napari_spotiflow_tracking._tracking import track_blobs, tracks_to_napari
+from napari_spotiflow_tracking._filter_panel import FilterPanel
+from napari_spotiflow_tracking._track_properties import compute_track_properties
 
 
 class TrackingWidget(QWidget):
@@ -30,12 +33,22 @@ class TrackingWidget(QWidget):
         self._connect_events()
 
     def _setup_ui(self):
-        layout = QVBoxLayout()
-        self.setLayout(layout)
+        outer_layout = QVBoxLayout()
+        self.setLayout(outer_layout)
 
-        # Input points layer
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        outer_layout.addWidget(scroll)
+
+        inner = QWidget()
+        layout = QVBoxLayout()
+        inner.setLayout(layout)
+        scroll.setWidget(inner)
+
+        # Input layers
         input_group = QGroupBox("Input")
         input_layout = QVBoxLayout()
+
         row = QHBoxLayout()
         row.addWidget(QLabel("Points layer:"))
         self._points_combo = QComboBox()
@@ -46,6 +59,18 @@ class TrackingWidget(QWidget):
         refresh_btn.clicked.connect(self._refresh_points_combo)
         row.addWidget(refresh_btn)
         input_layout.addLayout(row)
+
+        img_row = QHBoxLayout()
+        img_row.addWidget(QLabel("Image layer:"))
+        self._image_combo = QComboBox()
+        img_row.addWidget(self._image_combo)
+        img_refresh_btn = QPushButton("\u21BB")
+        img_refresh_btn.setFixedWidth(30)
+        img_refresh_btn.setToolTip("Refresh layer list (optional, for intensity stats)")
+        img_refresh_btn.clicked.connect(self._refresh_image_combo)
+        img_row.addWidget(img_refresh_btn)
+        input_layout.addLayout(img_row)
+
         input_group.setLayout(input_layout)
         layout.addWidget(input_group)
 
@@ -88,8 +113,13 @@ class TrackingWidget(QWidget):
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
 
+        # Embedded property filter
+        self._filter_panel = FilterPanel(self.viewer, "Tracks", "track_id", parent=self)
+        layout.addWidget(self._filter_panel)
+
         layout.addStretch()
         self._refresh_points_combo()
+        self._refresh_image_combo()
 
     def _connect_events(self):
         self.viewer.layers.events.inserted.connect(self._on_layer_change)
@@ -97,6 +127,7 @@ class TrackingWidget(QWidget):
 
     def _on_layer_change(self, event=None):
         self._refresh_points_combo()
+        self._refresh_image_combo()
 
     def _refresh_points_combo(self):
         prev = self._points_combo.currentText()
@@ -107,6 +138,16 @@ class TrackingWidget(QWidget):
         idx = self._points_combo.findText(prev)
         if idx >= 0:
             self._points_combo.setCurrentIndex(idx)
+
+    def _refresh_image_combo(self):
+        prev = self._image_combo.currentText()
+        self._image_combo.clear()
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Image):
+                self._image_combo.addItem(layer.name)
+        idx = self._image_combo.findText(prev)
+        if idx >= 0:
+            self._image_combo.setCurrentIndex(idx)
 
     def _run_tracking(self):
         layer_name = self._points_combo.currentText()
@@ -141,7 +182,21 @@ class TrackingWidget(QWidget):
         n_tracks = tracked_df["particle"].nunique()
         n_frames = int(df["frame"].nunique())
 
-        self.viewer.add_tracks(tracks_array, name="Tracked Spots")
+        image_name = self._image_combo.currentText()
+        image = None
+        if image_name and image_name in self.viewer.layers:
+            image = np.asarray(self.viewer.layers[image_name].data)
+
+        try:
+            track_props = compute_track_properties(tracked_df, image=image)
+        except ValueError as exc:
+            show_error(f"Track property compute failed: {exc}; falling back to no image.")
+            track_props = compute_track_properties(tracked_df, image=None)
+
+        tracks_layer = self.viewer.add_tracks(tracks_array, name="Tracked Spots")
+        tracks_layer.metadata["properties"] = track_props
+        tracks_layer.metadata["tracked_df"] = tracked_df
+
         self._last_tracked_df = tracked_df
         self._export_btn.setEnabled(True)
         msg = f"Found {n_tracks} tracks across {n_frames} frames."

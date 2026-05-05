@@ -122,3 +122,81 @@ class TestDetectionFilterPanelEmbedded:
         panel._refresh_layer_combo()
         panel._on_layer_changed("Detected Spots")
         assert "intensity" in panel._sliders
+
+
+@pytest.fixture
+def tracking_widget(make_napari_viewer):
+    from napari_spotiflow_tracking._tracking_widget import TrackingWidget
+    viewer = make_napari_viewer()
+    widget = TrackingWidget(viewer)
+    return widget, viewer
+
+
+class TestTrackingPropertiesAndFilter:
+    def _add_points_layer(self, viewer):
+        # 6 detections, 2 tracks (3 frames each)
+        data = np.array([
+            [0, 0.0, 0.0],
+            [1, 1.0, 0.0],
+            [2, 2.0, 0.0],
+            [0, 10.0, 10.0],
+            [1, 11.0, 10.0],
+            [2, 12.0, 10.0],
+        ])
+        viewer.add_points(data, name="spots")
+
+    def test_widget_has_image_combo(self, tracking_widget):
+        widget, viewer = tracking_widget
+        assert widget._image_combo is not None
+        assert widget._image_combo.count() == 0  # no image layers initially
+
+    def test_widget_has_filter_panel(self, tracking_widget):
+        widget, viewer = tracking_widget
+        from napari_spotiflow_tracking._filter_panel import FilterPanel
+        panels = widget.findChildren(FilterPanel)
+        assert len(panels) == 1
+        assert panels[0]._layer_kind == "Tracks"
+        assert panels[0]._id_column == "track_id"
+
+    def test_track_no_image_populates_geometric_properties(self, tracking_widget):
+        widget, viewer = tracking_widget
+        self._add_points_layer(viewer)
+        widget._points_combo.setCurrentText("spots")
+        widget._search_range.setValue(5.0)
+        widget._memory.setValue(0)
+        widget._track_btn.click()
+
+        tracks_layers = [l for l in viewer.layers if l.name == "Tracked Spots"]
+        assert len(tracks_layers) == 1
+        props = tracks_layers[0].metadata.get("properties")
+        assert isinstance(props, pd.DataFrame)
+        assert set(props.columns) >= {
+            "track_id", "length", "total_displacement",
+            "net_displacement", "mean_speed",
+        }
+        # Intensity columns absent
+        assert "mean_intensity" not in props.columns
+
+    def test_track_with_image_includes_intensity(self, tracking_widget):
+        widget, viewer = tracking_widget
+        self._add_points_layer(viewer)
+        viewer.add_image(np.ones((3, 32, 32)), name="img")
+        widget._points_combo.setCurrentText("spots")
+        widget._image_combo.setCurrentText("img")
+        widget._search_range.setValue(5.0)
+        widget._memory.setValue(0)
+        widget._track_btn.click()
+
+        tracks_layers = [l for l in viewer.layers if l.name == "Tracked Spots"]
+        props = tracks_layers[0].metadata.get("properties")
+        assert "mean_intensity" in props.columns
+
+    def test_tracked_df_stored_on_layer(self, tracking_widget):
+        widget, viewer = tracking_widget
+        self._add_points_layer(viewer)
+        widget._points_combo.setCurrentText("spots")
+        widget._search_range.setValue(5.0)
+        widget._memory.setValue(0)
+        widget._track_btn.click()
+        tracks_layer = viewer.layers["Tracked Spots"]
+        assert isinstance(tracks_layer.metadata.get("tracked_df"), pd.DataFrame)
