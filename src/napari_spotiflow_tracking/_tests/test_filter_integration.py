@@ -200,3 +200,39 @@ class TestTrackingPropertiesAndFilter:
         widget._track_btn.click()
         tracks_layer = viewer.layers["Tracked Spots"]
         assert isinstance(tracks_layer.metadata.get("tracked_df"), pd.DataFrame)
+
+
+class TestFilterEndToEndTracking:
+    def test_slider_filters_sibling_tracks_layer(self, tracking_widget):
+        widget, viewer = tracking_widget
+        # 2 tracks: short (length 2) and long (length 4)
+        data = np.array([
+            [0, 0.0, 0.0],
+            [1, 1.0, 0.0],
+            [0, 10.0, 10.0],
+            [1, 11.0, 10.0],
+            [2, 12.0, 10.0],
+            [3, 13.0, 10.0],
+        ])
+        viewer.add_points(data, name="spots")
+        widget._points_combo.setCurrentText("spots")
+        widget._search_range.setValue(5.0)
+        widget._memory.setValue(0)
+        widget._track_btn.click()
+
+        from napari_spotiflow_tracking._filter_panel import FilterPanel
+        panel = widget.findChildren(FilterPanel)[0]
+        panel._refresh_layer_combo()
+        panel._on_layer_changed("Tracked Spots")
+        assert "length" in panel._sliders
+
+        # Check sibling toggle and filter
+        panel._show_filtered_cb.setChecked(True)
+        # Filter to length >= 4 -> only the long track
+        slider = panel._sliders["length"]
+        slider.setValue((4, 4))
+        panel._refresh()
+
+        sibling = viewer.layers["Tracked Spots (filtered)"]
+        # 4 vertices for the single long track
+        assert len(sibling.data) == 4
