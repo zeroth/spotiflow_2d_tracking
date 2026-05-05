@@ -39,3 +39,63 @@ class TestDetectionPointsMetadata:
         layers = [l for l in viewer.layers if l.name == "Detected Spots"]
         props = layers[0].metadata.get("properties")
         assert list(props.columns) == ["spot_id", "y", "x", "intensity"]
+
+
+class TestMaskGenMerge:
+    def test_merge_into_existing_points_properties(self, detection_widget):
+        widget, viewer = detection_widget
+        # Pre-populate a Points layer with detection-style metadata
+        points_data = np.array([[0, 5.0, 5.0], [1, 6.0, 6.0]])
+        points_layer = viewer.add_points(points_data, name="Detected Spots")
+        points_layer.metadata["properties"] = pd.DataFrame({
+            "spot_id": [0, 1],
+            "frame": [0, 1],
+            "y": [5.0, 6.0],
+            "x": [5.0, 6.0],
+            "intensity": [10.0, 20.0],
+        })
+        widget._mask_target_points = points_layer
+
+        # Simulate mask-gen finishing with regionprops including new columns
+        mask = np.zeros((2, 16, 16), dtype=int)
+        props_df = pd.DataFrame({
+            "frame": [0, 1],
+            "y": [5.0, 6.0],
+            "x": [5.0, 6.0],
+            "area": [10, 20],
+            "mean_intensity": [50.0, 60.0],
+        })
+        widget._on_mask_finished(mask, props_df)
+
+        merged = points_layer.metadata["properties"]
+        # Old columns retained
+        assert "spot_id" in merged.columns
+        assert "intensity" in merged.columns
+        # New columns added
+        assert "area" in merged.columns
+        assert "mean_intensity" in merged.columns
+        # Values merged correctly
+        assert merged.loc[merged["spot_id"] == 0, "area"].iloc[0] == 10
+        assert merged.loc[merged["spot_id"] == 1, "mean_intensity"].iloc[0] == 60.0
+
+    def test_merge_when_target_has_no_properties(self, detection_widget):
+        widget, viewer = detection_widget
+        # Points layer without properties metadata (user-imported)
+        points_data = np.array([[0, 5.0, 5.0]])
+        points_layer = viewer.add_points(points_data, name="My Points")
+        widget._mask_target_points = points_layer
+
+        mask = np.zeros((1, 16, 16), dtype=int)
+        props_df = pd.DataFrame({
+            "frame": [0],
+            "y": [5.0],
+            "x": [5.0],
+            "area": [42],
+        })
+        widget._on_mask_finished(mask, props_df)
+
+        out = points_layer.metadata["properties"]
+        assert isinstance(out, pd.DataFrame)
+        assert "spot_id" in out.columns
+        assert "area" in out.columns
+        assert out["area"].iloc[0] == 42
