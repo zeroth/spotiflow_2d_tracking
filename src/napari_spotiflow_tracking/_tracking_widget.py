@@ -193,9 +193,11 @@ class TrackingWidget(QWidget):
             show_error(f"Track property compute failed: {exc}; falling back to no image.")
             track_props = compute_track_properties(tracked_df, image=None)
 
-        tracks_layer = self.viewer.add_tracks(tracks_array, name="Tracked Spots")
-        tracks_layer.metadata["properties"] = track_props
-        tracks_layer.metadata["tracked_df"] = tracked_df
+        self.viewer.add_tracks(
+            tracks_array,
+            name="Tracked Spots",
+            metadata={"properties": track_props, "tracked_df": tracked_df},
+        )
 
         self._last_tracked_df = tracked_df
         self._export_btn.setEnabled(True)

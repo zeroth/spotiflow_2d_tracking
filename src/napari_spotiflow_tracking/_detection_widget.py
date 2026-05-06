@@ -462,12 +462,6 @@ class DetectionWidget(QWidget):
             intensities = np.zeros(n_spots, dtype=float)
 
         if n_spots > 0:
-            new_layer = self.viewer.add_points(
-                points,
-                name="Detected Spots",
-                size=3,
-                face_color="red",
-            )
             spot_id = np.arange(n_spots, dtype=int)
             if points.shape[1] == 3:
                 df = pd.DataFrame({
@@ -484,7 +478,13 @@ class DetectionWidget(QWidget):
                     "x": points[:, 1].astype(float),
                     "intensity": np.asarray(intensities, dtype=float),
                 })
-            new_layer.metadata["properties"] = df
+            self.viewer.add_points(
+                points,
+                name="Detected Spots",
+                size=3,
+                face_color="red",
+                metadata={"properties": df},
+            )
         if masks is not None:
             self.viewer.add_labels(masks, name="Spot Masks", opacity=0.4)
 

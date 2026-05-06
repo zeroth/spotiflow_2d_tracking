@@ -38,6 +38,13 @@ from matplotlib.figure import Figure
 
 from napari_spotiflow_tracking._mpl_theme import style_figure
 
+_POINTS_FILTER_WHITELIST = frozenset({
+    "intensity", "mean_intensity", "max_intensity", "min_intensity", "area",
+})
+_TRACKS_FILTER_WHITELIST = frozenset({
+    "intensity", "mean_intensity", "max_intensity", "min_intensity", "area", "length",
+})
+
 
 class _PropertyTableModel(QAbstractTableModel):
     def __init__(self, parent=None):
@@ -314,13 +321,9 @@ class FilterPanel(QWidget):
                 w.setParent(None)
 
     def _is_filterable_column(self, col: str) -> bool:
-        if col == self._id_column:
-            return False
-        if self._layer_kind == "Points" and col in {"frame", "y", "x"}:
-            return False
-        if self._layer_kind == "Tracks" and col in {"t", "y", "x", "track_id"}:
-            return False
-        return True
+        if self._layer_kind == "Points":
+            return col in _POINTS_FILTER_WHITELIST
+        return col in _TRACKS_FILTER_WHITELIST
 
     def _build_sliders(self, df: pd.DataFrame):
         cmap = colormaps.get_cmap("tab10")

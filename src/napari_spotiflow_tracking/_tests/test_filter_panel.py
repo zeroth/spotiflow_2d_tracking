@@ -123,13 +123,13 @@ class TestSliderGeneration:
             "frame": [0, 1, 2],
             "y": [1.0, 2.0, 3.0],
             "x": [4.0, 5.0, 6.0],
-            "category": [1, 1, 1],  # constant
+            "area": [1, 1, 1],  # constant, whitelisted
             "intensity": [10.0, 20.0, 30.0],
         })
         _add_points_with_props(viewer, "spots", df)
-        assert "category" not in panel._sliders
+        assert "area" not in panel._sliders
         assert "intensity" in panel._sliders
-        assert "category" in panel._constant_labels
+        assert "area" in panel._constant_labels
 
     def test_slider_range_matches_column_min_max(self, filter_panel_points):
         panel, viewer = filter_panel_points
