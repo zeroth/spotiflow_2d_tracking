@@ -101,6 +101,34 @@ class TestMaskGenMerge:
         assert out["area"].iloc[0] == 42
 
 
+    def test_integrated_detect_with_mask_merges_regionprops(self, detection_widget):
+        widget, viewer = detection_widget
+        # Add an Image layer the widget can find via _image_combo
+        image = np.ones((2, 16, 16), dtype=float) * 100
+        viewer.add_image(image, name="img")
+        widget._refresh_image_combo()
+        widget._image_combo.setCurrentText("img")
+
+        # Synthetic detection result with a non-trivial mask: each frame has
+        # one labeled region of area 4 around the detected point.
+        points = np.array([[0, 5.0, 5.0], [1, 6.0, 6.0]])
+        intensities = np.array([100.0, 200.0])
+        mask = np.zeros((2, 16, 16), dtype=int)
+        mask[0, 4:6, 4:6] = 1
+        mask[1, 5:7, 5:7] = 1
+        widget._on_detection_finished(points, mask, intensities)
+
+        points_layer = next(l for l in viewer.layers if l.name == "Detected Spots")
+        props = points_layer.metadata.get("properties")
+        assert isinstance(props, pd.DataFrame)
+        # Original detect-time columns retained
+        assert "spot_id" in props.columns
+        assert "intensity" in props.columns
+        # Regionprops columns merged in
+        assert "area" in props.columns
+        assert "mean_intensity" in props.columns
+
+
 class TestDetectionFilterPanelEmbedded:
     def test_widget_has_filter_panel(self, detection_widget):
         widget, viewer = detection_widget

@@ -517,3 +517,105 @@ class TestSiblingLayerTracks:
         sibling = viewer.layers["t (filtered)"]
         assert len(sibling.data) == 3
         assert all(row[0] == 2 for row in sibling.data)
+
+
+class TestHistogramWhitelist:
+    def test_points_panel_has_checkbox_for_each_whitelisted_property(self, filter_panel_points):
+        panel, viewer = filter_panel_points
+        df = pd.DataFrame({
+            "spot_id": [0, 1, 2],
+            "frame": [0, 1, 2],
+            "y": [0.0] * 3,
+            "x": [0.0] * 3,
+            "intensity": [10.0, 20.0, 30.0],
+            "area": [100, 200, 300],
+        })
+        _add_points_with_props(viewer, "spots", df)
+        # Both whitelisted, both get histogram checkboxes
+        assert set(panel._hist_checkboxes.keys()) == {"intensity", "area"}
+
+    def test_tracks_panel_only_has_length_checkbox(self, filter_panel_tracks):
+        panel, viewer = filter_panel_tracks
+        df = pd.DataFrame({
+            "track_id": [0, 1],
+            "length": [10, 20],
+            "mean_intensity": [50.0, 60.0],
+            "max_intensity": [100.0, 200.0],
+        })
+        tracks_data = np.array([[0, 0, 0, 0], [0, 1, 0, 0], [1, 0, 0, 0], [1, 1, 0, 0]])
+        layer = viewer.add_tracks(tracks_data, name="t")
+        layer.metadata["properties"] = df
+        panel._on_layer_changed("t")
+        # Only length gets a histogram checkbox; mean_intensity/max_intensity have sliders but no histogram
+        assert set(panel._hist_checkboxes.keys()) == {"length"}
+        # Sliders still cover all whitelisted columns
+        assert "length" in panel._sliders
+        assert "mean_intensity" in panel._sliders
+        assert "max_intensity" in panel._sliders
+
+    def test_tracks_histogram_uses_raw_values(self, filter_panel_tracks):
+        panel, viewer = filter_panel_tracks
+        df = pd.DataFrame({"track_id": [0, 1, 2], "length": [10, 20, 30]})
+        tracks_data = np.array([[0, 0, 0, 0], [0, 1, 0, 0], [1, 0, 0, 0], [1, 1, 0, 0]])
+        layer = viewer.add_tracks(tracks_data, name="t")
+        layer.metadata["properties"] = df
+        panel._on_layer_changed("t")
+        ax = panel._hist_fig.axes[0]
+        # x-axis label is "value" (raw), not "normalized [0, 1]"
+        assert ax.get_xlabel() == "value"
+
+
+class TestTracksFilterPersistence:
+    def _add_tracks_with_props(self, viewer, name, tracked_df, meta_df):
+        rows = tracked_df.sort_values(["particle", "frame"])[
+            ["particle", "frame", "y", "x"]
+        ].to_numpy()
+        layer = viewer.add_tracks(rows, name=name)
+        layer.metadata["properties"] = meta_df
+        layer.metadata["tracked_df"] = tracked_df
+        return layer
+
+    def test_slider_value_survives_sibling_update(self, filter_panel_tracks):
+        panel, viewer = filter_panel_tracks
+        tracked_df = pd.DataFrame({
+            "frame": [0, 1, 0, 1, 2, 0, 1, 2, 3],
+            "y": [0.0] * 9,
+            "x": [0.0] * 9,
+            "particle": [1, 1, 2, 2, 2, 3, 3, 3, 3],
+        })
+        meta_df = pd.DataFrame({"track_id": [1, 2, 3], "length": [2, 3, 4]})
+        self._add_tracks_with_props(viewer, "t", tracked_df, meta_df)
+        panel._on_layer_changed("t")
+
+        # Enable sibling and apply a filter
+        panel._show_filtered_cb.setChecked(True)
+        slider = panel._sliders["length"]
+        slider.setValue((3, 4))
+        panel._refresh()
+
+        # The slider value should persist after sibling has been recreated
+        lo, hi = slider.value()
+        assert lo == 3
+        assert hi == 4
+
+        # And the filter ranges still reflect the user's setting
+        assert panel._filter_ranges["length"] == (3, 4)
+
+    def test_sibling_layer_excluded_from_combo(self, filter_panel_tracks):
+        panel, viewer = filter_panel_tracks
+        tracked_df = pd.DataFrame({
+            "frame": [0, 1, 0, 1],
+            "y": [0.0] * 4,
+            "x": [0.0] * 4,
+            "particle": [1, 1, 2, 2],
+        })
+        meta_df = pd.DataFrame({"track_id": [1, 2], "length": [2, 2]})
+        self._add_tracks_with_props(viewer, "t", tracked_df, meta_df)
+        panel._on_layer_changed("t")
+        panel._show_filtered_cb.setChecked(True)
+        # The sibling layer "t (filtered)" exists in the viewer
+        assert "t (filtered)" in [l.name for l in viewer.layers]
+        # but is NOT shown in the panel's source layer combo
+        items = [panel._layer_combo.itemText(i) for i in range(panel._layer_combo.count())]
+        assert "t (filtered)" not in items
+        assert "t" in items

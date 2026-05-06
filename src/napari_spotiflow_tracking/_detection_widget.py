@@ -486,7 +486,26 @@ class DetectionWidget(QWidget):
                 metadata={"properties": df},
             )
         if masks is not None:
-            self.viewer.add_labels(masks, name="Spot Masks", opacity=0.4)
+            mask_data = np.asarray(masks)
+            mask_layer = self.viewer.add_labels(mask_data, name="Spot Masks", opacity=0.4)
+            # Compute regionprops + merge into Points layer's metadata so the
+            # FilterPanel can offer area/mean_intensity/etc. sliders the same
+            # way the "Generate Mask from Points" path does via _on_mask_finished.
+            image_name = self._image_combo.currentText()
+            if n_spots > 0 and image_name and image_name in self.viewer.layers:
+                image_data = np.asarray(self.viewer.layers[image_name].data)
+                try:
+                    props_df = self._compute_regionprops_df(mask_data, image_data)
+                except Exception as exc:
+                    show_error(f"Failed to compute regionprops: {exc}")
+                else:
+                    mask_layer.metadata["regionprops"] = props_df
+                    points_layer = next(
+                        (l for l in self.viewer.layers if l.name == "Detected Spots"),
+                        None,
+                    )
+                    if points_layer is not None:
+                        self._merge_regionprops_into_points(points_layer, props_df)
 
     def _generate_mask_from_points(self):
         """Generate a mask from an existing Points layer using Gaussian fitting."""
@@ -573,6 +592,36 @@ class DetectionWidget(QWidget):
             new_df = props_df.copy()
             new_df.insert(0, "spot_id", np.arange(len(new_df), dtype=int))
             points_layer.metadata["properties"] = new_df
+
+    def _compute_regionprops_df(self, mask_data: np.ndarray, image_data: np.ndarray) -> pd.DataFrame:
+        """Compute regionprops on mask + image (2D or 3D), return as DataFrame."""
+        from skimage.measure import regionprops_table
+
+        properties = [
+            "label", "area", "centroid", "mean_intensity", "max_intensity",
+            "min_intensity", "bbox", "equivalent_diameter", "perimeter",
+            "solidity",
+        ]
+        if mask_data.ndim == 2:
+            table = regionprops_table(
+                mask_data, intensity_image=image_data, properties=properties,
+            )
+            df = pd.DataFrame(table)
+            df.rename(columns={"centroid-0": "y", "centroid-1": "x"}, inplace=True)
+            return df
+        if mask_data.ndim == 3:
+            frames = []
+            for t in range(mask_data.shape[0]):
+                table = regionprops_table(
+                    mask_data[t], intensity_image=image_data[t],
+                    properties=properties,
+                )
+                frame_df = pd.DataFrame(table)
+                frame_df.rename(columns={"centroid-0": "y", "centroid-1": "x"}, inplace=True)
+                frame_df.insert(0, "frame", t)
+                frames.append(frame_df)
+            return pd.concat(frames, ignore_index=True)
+        raise ValueError(f"Unsupported mask dimensions: {mask_data.ndim}D")
 
     def _on_mask_error(self, msg: str):
         if self._pbr is not None:

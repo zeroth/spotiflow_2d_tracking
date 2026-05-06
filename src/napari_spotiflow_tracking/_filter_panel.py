@@ -45,6 +45,9 @@ _TRACKS_FILTER_WHITELIST = frozenset({
     "intensity", "mean_intensity", "max_intensity", "min_intensity", "area", "length",
 })
 
+_POINTS_HISTOGRAM_WHITELIST = _POINTS_FILTER_WHITELIST  # all 5 properties
+_TRACKS_HISTOGRAM_WHITELIST = frozenset({"length"})
+
 
 class _PropertyTableModel(QAbstractTableModel):
     def __init__(self, parent=None):
@@ -252,14 +255,44 @@ class FilterPanel(QWidget):
         self._layer_combo.clear()
         cls = self._layer_class()
         for layer in self._viewer.layers:
-            if isinstance(layer, cls):
-                self._layer_combo.addItem(layer.name)
+            if not isinstance(layer, cls):
+                continue
+            # Skip our own sibling — it's not a useful filter source.
+            # Check by identity first (fast path) and by name as a fallback
+            # for the window between add_tracks() firing events.inserted and
+            # _sibling_layer being assigned.
+            sibling_name = self._sibling_name()
+            if (self._sibling_layer is not None and layer is self._sibling_layer) or (
+                sibling_name and layer.name == sibling_name
+            ):
+                continue
+            self._layer_combo.addItem(layer.name)
         idx = self._layer_combo.findText(prev)
         if idx >= 0:
             self._layer_combo.setCurrentIndex(idx)
         self._update_status()
 
     def _on_layer_changed(self, name: str):
+        # Defensive: if a transient currentTextChanged signal selects the same
+        # source layer we're already showing, don't tear down the user's
+        # sliders. This protects against the clear+rebuild cycle in
+        # _refresh_layer_combo when sibling layers churn.
+        #
+        # Two transient cases to guard:
+        # 1. name == "" — emitted by QComboBox.clear() mid-rebuild; if we
+        #    already have a valid source, ignore this transient blank signal.
+        # 2. name matches the current source — the combo re-selected the same
+        #    layer after a clear+addItem cycle; nothing has changed.
+        if self._source_layer is not None:
+            if not name:
+                return
+            if (
+                self._source_layer.name == name
+                and name in self._viewer.layers
+                and self._viewer.layers[name] is self._source_layer
+            ):
+                return
+
         self._clear_sliders()
         self._source_df = None
         self._source_layer = None
@@ -325,6 +358,14 @@ class FilterPanel(QWidget):
             return col in _POINTS_FILTER_WHITELIST
         return col in _TRACKS_FILTER_WHITELIST
 
+    def _is_histogram_column(self, col: str) -> bool:
+        if self._layer_kind == "Points":
+            return col in _POINTS_HISTOGRAM_WHITELIST
+        return col in _TRACKS_HISTOGRAM_WHITELIST
+
+    def _normalize_histogram(self) -> bool:
+        return self._layer_kind == "Points"
+
     def _build_sliders(self, df: pd.DataFrame):
         cmap = colormaps.get_cmap("tab10")
         color_idx = 0
@@ -368,11 +409,12 @@ class FilterPanel(QWidget):
                 lambda v, c=col: self._on_slider_changed(c, v)
             )
 
-            cb = QCheckBox(col)
-            cb.setChecked(True)
-            cb.toggled.connect(self._redraw_histogram)
-            self._hist_checkbox_layout.addWidget(cb)
-            self._hist_checkboxes[col] = cb
+            if self._is_histogram_column(col):
+                cb = QCheckBox(col)
+                cb.setChecked(True)
+                cb.toggled.connect(self._redraw_histogram)
+                self._hist_checkbox_layout.addWidget(cb)
+                self._hist_checkboxes[col] = cb
 
     def _update_status(self):
         if self._layer_combo.count() == 0:
@@ -466,10 +508,14 @@ class FilterPanel(QWidget):
 
         self._hist_fig.clear()
         ax = self._hist_fig.add_subplot(111)
-        ax.set_xlabel("normalized [0, 1]")
+        if self._normalize_histogram():
+            ax.set_xlabel("normalized [0, 1]")
+        else:
+            ax.set_xlabel("value")
         ax.set_ylabel("count")
 
         any_drawn = False
+        normalize = self._normalize_histogram()
         for col, slider in self._sliders.items():
             cb = self._hist_checkboxes.get(col)
             if cb is None or not cb.isChecked():
@@ -481,13 +527,20 @@ class FilterPanel(QWidget):
             values = filtered[col].to_numpy() if col in filtered.columns else np.array([])
             if values.size == 0:
                 continue
-            normed = (values - col_min) / (col_max - col_min)
             color = self._hist_colors.get(col, "tab:blue")
-            ax.hist(
-                normed, bins=30, range=(0, 1),
-                histtype="stepfilled", alpha=0.5, color=color,
-                label=f"{col}  [{col_min:.3g} - {col_max:.3g}]",
-            )
+            if normalize:
+                normed = (values - col_min) / (col_max - col_min)
+                ax.hist(
+                    normed, bins=30, range=(0, 1),
+                    histtype="stepfilled", alpha=0.5, color=color,
+                    label=f"{col}  [{col_min:.3g} - {col_max:.3g}]",
+                )
+            else:
+                ax.hist(
+                    values, bins=30, range=(float(col_min), float(col_max)),
+                    histtype="stepfilled", alpha=0.5, color=color,
+                    label=f"{col}",
+                )
             any_drawn = True
 
         if any_drawn:
