@@ -272,6 +272,21 @@ class FilterPanel(QWidget):
             self._layer_combo.setCurrentIndex(idx)
         self._update_status()
 
+    def refresh_current_layer(self) -> None:
+        """Re-read the current source layer's ``metadata['properties']``.
+
+        Call from the host widget after merging new columns into a layer's
+        metadata so the panel rebuilds sliders/histogram with the new
+        columns. No-op when no source layer is currently loaded.
+        """
+        if self._source_layer is None:
+            return
+        name = self._source_layer.name
+        # Bypass the same-source early-return guard in _on_layer_changed
+        # by clearing the cached layer reference first.
+        self._source_layer = None
+        self._on_layer_changed(name)
+
     def _on_layer_changed(self, name: str):
         # Defensive: if a transient currentTextChanged signal selects the same
         # source layer we're already showing, don't tear down the user's

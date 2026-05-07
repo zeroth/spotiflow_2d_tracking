@@ -277,7 +277,7 @@ class TestGpuFitColumnRenames:
         from napari_spotiflow_tracking._fitting import make_gpu_spot_mask
         # 1 frame, 16x16 image, one fitted spot at (8, 8) with sigma 1.5
         df = pd.DataFrame({
-            "time": [1],
+            "time": [0],  # 0-indexed (matches frame convention)
             "x": [8.0],
             "y": [8.0],
             "x_fit": [8.0],

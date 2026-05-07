@@ -301,10 +301,10 @@ class GpuFitMaskWorker(QThread):
                 self.errored.emit("No detections to fit.")
                 return
             if pts.shape[1] == 3:
-                # (frame, y, x); convert frame to 1-indexed time as expected
-                # by fit_all_frames_gpu's contract.
+                # (frame, y, x). `time` is 0-indexed (matches frame index
+                # used elsewhere in the pipeline).
                 df = pd.DataFrame({
-                    "time": pts[:, 0].astype(int) + 1,
+                    "time": pts[:, 0].astype(int),
                     "y": pts[:, 1].astype(float),
                     "x": pts[:, 2].astype(float),
                 })
@@ -336,11 +336,11 @@ class GpuFitMaskWorker(QThread):
                 intensity_stack=stack,
                 max_radius=self._max_radius,
             )
-            # Add a `frame` column (0-indexed) so it matches the regionprops
-            # convention used by _merge_regionprops_into_points (which keys
-            # on frame, y, x).
+            # `time` is already 0-indexed in our flow; alias to `frame` so
+            # _merge_regionprops_into_points (which keys on frame/y/x)
+            # finds matching rows in the Points layer's existing metadata.
             props_df = props_df.copy()
-            props_df["frame"] = props_df["time"].astype(int) - 1
+            props_df["frame"] = props_df["time"].astype(int)
             self.finished.emit(mask, props_df)
         except Exception:
             import traceback

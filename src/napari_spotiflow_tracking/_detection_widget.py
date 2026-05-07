@@ -561,6 +561,7 @@ class DetectionWidget(QWidget):
                     )
                     if points_layer is not None:
                         self._merge_regionprops_into_points(points_layer, props_df)
+                        self._filter_panel.refresh_current_layer()
 
     def _generate_mask_from_points(self):
         """Generate a mask from an existing Points layer using Gaussian fitting."""
@@ -620,6 +621,7 @@ class DetectionWidget(QWidget):
         target = self._mask_target_points
         if target is not None and target in self.viewer.layers:
             self._merge_regionprops_into_points(target, props_df)
+            self._filter_panel.refresh_current_layer()
 
         n_regions = len(props_df)
         show_info(f"Done — mask generated ({n_regions} regions with properties).")
@@ -633,6 +635,7 @@ class DetectionWidget(QWidget):
         target = self._gpu_pending_points_layer
         if target is not None and target in self.viewer.layers:
             self._merge_regionprops_into_points(target, props_df)
+            self._filter_panel.refresh_current_layer()
         self._gpu_pending_points_layer = None
         self._gpu_fit_worker = None
         n_regions = len(props_df.dropna(subset=["area"]))
