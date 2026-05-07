@@ -7,6 +7,7 @@ from napari.utils.notifications import show_info, show_error
 import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -167,6 +168,14 @@ class TrackingWidget(QWidget):
         # Mean-speed distribution (chart labeled "Mean speed", which
         # is the per-track velocity = total displacement / (length-1)).
         layout.addWidget(QLabel("Mean speed distribution:"))
+        speed_formula = QLabel(
+            "<i>mean_speed = (Σ ‖p<sub>i</sub> − p<sub>i−1</sub>‖) / (length − 1)</i>"
+            " &nbsp;— sum of frame-to-frame Euclidean displacements divided"
+            " by the number of steps."
+        )
+        speed_formula.setWordWrap(True)
+        speed_formula.setTextFormat(Qt.RichText)
+        layout.addWidget(speed_formula)
         self._speed_fig = Figure(figsize=(6, 3), tight_layout=True)
         self._speed_canvas = FigureCanvas(self._speed_fig)
         self._speed_canvas.setFixedHeight(220)
