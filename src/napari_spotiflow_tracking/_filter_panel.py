@@ -27,6 +27,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -396,10 +397,10 @@ class FilterPanel(QWidget):
                 cb.toggled.connect(self._redraw_histogram)
                 row.addWidget(cb)
                 self._hist_checkboxes[col] = cb
-            else:
-                spacer = QWidget()
-                spacer.setFixedWidth(self._ROW_CB_WIDTH)
-                row.addWidget(spacer)
+            # else:
+            #     spacer = QWidget()
+            #     spacer.setFixedWidth(self._ROW_CB_WIDTH)
+            #     row.addWidget(spacer)
 
             label = QLabel(col)
             label.setMinimumWidth(self._ROW_LABEL_WIDTH)
@@ -428,7 +429,14 @@ class FilterPanel(QWidget):
                 slider = QLabeledDoubleRangeSlider(Qt.Horizontal)
                 slider.setRange(float(col_min), float(col_max))
                 slider.setValue((float(col_min), float(col_max)))
-            row.addWidget(slider)
+            # QLabeledRangeSlider's default horizontal size policy is
+            # Preferred, which makes the layout respect its small intrinsic
+            # width and ignore stretch. Force horizontal Expanding so the
+            # track fills the available row width.
+            slider.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+            row.addWidget(slider, stretch=3)
 
             container = QWidget()
             container.setLayout(row)
