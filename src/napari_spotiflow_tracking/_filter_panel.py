@@ -42,9 +42,7 @@ from napari_spotiflow_tracking._mpl_theme import style_figure
 _POINTS_FILTER_WHITELIST = frozenset({
     "intensity", "mean_intensity", "max_intensity", "min_intensity", "area",
 })
-_TRACKS_FILTER_WHITELIST = frozenset({
-    "intensity", "mean_intensity", "max_intensity", "min_intensity", "area", "length",
-})
+_TRACKS_FILTER_WHITELIST = frozenset({ "length" })
 
 _POINTS_HISTOGRAM_WHITELIST = _POINTS_FILTER_WHITELIST  # all 5 properties
 _TRACKS_HISTOGRAM_WHITELIST = frozenset({"length"})
@@ -436,6 +434,11 @@ class FilterPanel(QWidget):
             slider.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
             )
+            # Hide the static min/max edge labels — they duplicate the
+            # floating handle labels and steal track width when values are
+            # wide (e.g. 1339.99). superqt's _AbstractLabeledSlider hides
+            # them when passed a falsy EdgeLabelMode.
+            slider.setEdgeLabelMode(QLabeledRangeSlider.EdgeLabelMode(0))
             row.addWidget(slider, stretch=3)
 
             container = QWidget()

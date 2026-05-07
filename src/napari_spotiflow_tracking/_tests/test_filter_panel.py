@@ -546,12 +546,10 @@ class TestHistogramWhitelist:
         layer = viewer.add_tracks(tracks_data, name="t")
         layer.metadata["properties"] = df
         panel._on_layer_changed("t")
-        # Only length gets a histogram checkbox; mean_intensity/max_intensity have sliders but no histogram
+        # Tracks filter whitelist is narrowed to just `length`, so only
+        # length gets a slider and a histogram checkbox.
+        assert set(panel._sliders.keys()) == {"length"}
         assert set(panel._hist_checkboxes.keys()) == {"length"}
-        # Sliders still cover all whitelisted columns
-        assert "length" in panel._sliders
-        assert "mean_intensity" in panel._sliders
-        assert "max_intensity" in panel._sliders
 
     def test_tracks_histogram_uses_raw_values(self, filter_panel_tracks):
         panel, viewer = filter_panel_tracks
