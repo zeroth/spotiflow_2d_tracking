@@ -128,6 +128,22 @@ class DetectionWidget(QWidget):
         row_dist.addWidget(self._min_distance)
         spoti_layout.addLayout(row_dist)
 
+        # GPU fit window size — half-window radius for the Gaussian fit;
+        # also used as the max_radius for the spot mask. Only relevant when
+        # the GPU fit + mask path is active.
+        row_win = QHBoxLayout()
+        self._fit_window_label = QLabel("Fit window size:")
+        row_win.addWidget(self._fit_window_label)
+        self._fit_window = QSpinBox()
+        self._fit_window.setRange(1, 20)
+        self._fit_window.setValue(2)
+        self._fit_window.setToolTip(
+            "Half-window radius for GPU Gaussian fit (also used as the "
+            "maximum spot radius for the generated mask)."
+        )
+        row_win.addWidget(self._fit_window)
+        spoti_layout.addLayout(row_win)
+
         # Device
         self._use_gpu = QCheckBox("Use GPU (CUDA)")
         try:
@@ -226,6 +242,9 @@ class DetectionWidget(QWidget):
 
         if self._has_gpu_fit:
             mask_group.setVisible(False)
+        else:
+            self._fit_window_label.setVisible(False)
+            self._fit_window.setVisible(False)
 
         # Detect button + quick preview + cancel
         detect_row = QHBoxLayout()
@@ -508,8 +527,10 @@ class DetectionWidget(QWidget):
                     (l for l in self.viewer.layers if l.name == "Detected Spots"),
                     None,
                 )
+                win = int(self._fit_window.value())
                 self._gpu_fit_worker = GpuFitMaskWorker(
                     image=src_image, points=points,
+                    win=win, max_radius=float(win),
                 )
                 self._gpu_fit_worker.progress.connect(
                     lambda msg: self._status_label.setText(msg)

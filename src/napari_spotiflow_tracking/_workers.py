@@ -271,6 +271,7 @@ class GpuFitMaskWorker(QThread):
         image: np.ndarray,
         points: np.ndarray,
         win: int = 2,
+        max_radius: float | None = None,
         max_iter: int = 50,
         chunk_size: int = 20000,
         parent=None,
@@ -279,6 +280,9 @@ class GpuFitMaskWorker(QThread):
         self._image = image
         self._points = points
         self._win = win
+        # Default: cap spot radius at the fit half-window so the mask and
+        # the fit footprint stay consistent.
+        self._max_radius = float(win) if max_radius is None else float(max_radius)
         self._max_iter = max_iter
         self._chunk_size = chunk_size
 
@@ -330,6 +334,7 @@ class GpuFitMaskWorker(QThread):
                 stack_shape=stack.shape,
                 df=fitted,
                 intensity_stack=stack,
+                max_radius=self._max_radius,
             )
             # Add a `frame` column (0-indexed) so it matches the regionprops
             # convention used by _merge_regionprops_into_points (which keys
