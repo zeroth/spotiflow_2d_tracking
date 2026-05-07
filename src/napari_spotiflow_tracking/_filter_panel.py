@@ -111,6 +111,7 @@ class FilterPanel(QWidget):
     """Reusable filter panel embedded in Detection and Tracking widgets."""
 
     selectionChanged = Signal(int)
+    filteredDataChanged = Signal(object)  # emits the filtered DataFrame
 
     def __init__(
         self,
@@ -178,6 +179,10 @@ class FilterPanel(QWidget):
         self._table_model = _PropertyTableModel(self)
         self._proxy = _PropertyTableProxy(self)
         self._proxy.setSourceModel(self._table_model)
+        # NOTE: the table view is intentionally NOT added to FilterPanel's
+        # own layout. Host widgets place it elsewhere (e.g. an Analysis
+        # tab) by pulling it via the public `table_view` property; Qt
+        # re-parents on addWidget.
         self._table_view = QTableView()
         self._table_view.setModel(self._proxy)
         self._table_view.setSelectionMode(QTableView.SingleSelection)
@@ -185,7 +190,6 @@ class FilterPanel(QWidget):
         self._table_view.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeToContents
         )
-        layout.addWidget(self._table_view)
 
         sel_model = self._table_view.selectionModel()
         sel_model.currentRowChanged.connect(self._on_table_selection_changed)
@@ -262,6 +266,17 @@ class FilterPanel(QWidget):
             self._layer_combo.setCurrentIndex(idx)
         self._update_status()
 
+    @property
+    def table_view(self) -> QTableView:
+        """Return the table view widget so host widgets can place it.
+
+        FilterPanel constructs and owns the table view + proxy + model
+        but doesn't add the view to its own layout. Host widgets call
+        e.g. ``analysis_layout.addWidget(panel.table_view)`` to place it
+        in an Analysis tab; Qt re-parents on addWidget.
+        """
+        return self._table_view
+
     def refresh_current_layer(self) -> None:
         """Re-read the current source layer's ``metadata['properties']``.
 
@@ -335,6 +350,9 @@ class FilterPanel(QWidget):
         self._proxy.setRanges({})
         self._redraw_histogram()
         self._update_status()
+        # Emit the initial unfiltered DataFrame for any Analysis tab
+        # subscriber so charts populate as soon as a layer is selected.
+        self.filteredDataChanged.emit(props.copy())
 
     def _clear_sliders(self):
         for slider in self._sliders.values():
@@ -473,6 +491,9 @@ class FilterPanel(QWidget):
     def _refresh(self):
         if self._source_df is None or len(self._sliders) == 0:
             self._update_status()
+            self.filteredDataChanged.emit(
+                self._source_df.copy() if self._source_df is not None else pd.DataFrame()
+            )
             return
 
         mask = pd.Series(True, index=self._source_df.index)
@@ -489,6 +510,8 @@ class FilterPanel(QWidget):
         self._redraw_histogram(filtered=filtered)
         if self._show_filtered_cb.isChecked():
             self._update_sibling_layer(filtered)
+
+        self.filteredDataChanged.emit(filtered)
 
     def _on_table_selection_changed(self, current, previous):
         if not current.isValid():

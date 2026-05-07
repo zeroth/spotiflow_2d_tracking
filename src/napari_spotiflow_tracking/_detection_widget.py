@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from napari.utils.notifications import show_info, show_error
 from napari.utils import progress
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,9 +22,12 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from napari_spotiflow_tracking._mpl_theme import style_figure
 
 from napari_spotiflow_tracking._segmentation import load_model
 from napari_spotiflow_tracking._workers import DetectionWorker, MaskGenerationWorker
@@ -53,14 +58,24 @@ class DetectionWidget(QWidget):
         outer_layout = QVBoxLayout()
         self.setLayout(outer_layout)
 
+        self._tabs = QTabWidget()
+        outer_layout.addWidget(self._tabs)
+
+        # === Control tab ============================================
+        control_tab = QWidget()
+        control_outer = QVBoxLayout()
+        control_tab.setLayout(control_outer)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        outer_layout.addWidget(scroll)
+        control_outer.addWidget(scroll)
 
         inner = QWidget()
         layout = QVBoxLayout()
         inner.setLayout(layout)
         scroll.setWidget(inner)
+
+        self._tabs.addTab(control_tab, "Control")
 
         # Input image
         input_group = QGroupBox("Input")
@@ -280,6 +295,65 @@ class DetectionWidget(QWidget):
         layout.addStretch()
         self._refresh_image_combo()
         self._refresh_points_combo()
+
+        # === Analysis tab ===========================================
+        self._build_analysis_tab()
+
+    def _build_analysis_tab(self):
+        analysis_tab = QWidget()
+        analysis_outer = QVBoxLayout()
+        analysis_tab.setLayout(analysis_outer)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        analysis_outer.addWidget(scroll)
+
+        inner = QWidget()
+        layout = QVBoxLayout()
+        inner.setLayout(layout)
+        scroll.setWidget(inner)
+
+        # Filtered rows table — re-parented from the FilterPanel.
+        layout.addWidget(QLabel("Filtered rows:"))
+        layout.addWidget(self._filter_panel.table_view)
+
+        # Spots-per-frame bar chart.
+        layout.addWidget(QLabel("Spots per frame:"))
+        self._spots_per_frame_fig = Figure(figsize=(6, 3), tight_layout=True)
+        self._spots_per_frame_canvas = FigureCanvas(self._spots_per_frame_fig)
+        self._spots_per_frame_canvas.setFixedHeight(280)
+        layout.addWidget(self._spots_per_frame_canvas)
+
+        layout.addStretch()
+        self._tabs.addTab(analysis_tab, "Analysis")
+
+        self._filter_panel.filteredDataChanged.connect(
+            self._on_filter_data_changed
+        )
+
+    def _on_filter_data_changed(self, df):
+        self._redraw_spots_per_frame(df)
+
+    def _redraw_spots_per_frame(self, df):
+        fig = self._spots_per_frame_fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.set_xlabel("Frame")
+        ax.set_ylabel("Number of spots")
+
+        if df is None or len(df) == 0 or "frame" not in df.columns:
+            style_figure(fig)
+            self._spots_per_frame_canvas.draw_idle()
+            return
+
+        # Display frames as 1-indexed for human-friendliness.
+        counts = df.groupby("frame").size()
+        counts = counts.sort_index()
+        x = counts.index.to_numpy() + 1
+        y = counts.to_numpy()
+        ax.bar(x, y, color="#7fb3ff", edgecolor="#3f7fcf")
+        style_figure(fig)
+        self._spots_per_frame_canvas.draw_idle()
 
     def _connect_events(self):
         self.viewer.layers.events.inserted.connect(self._on_layer_change)

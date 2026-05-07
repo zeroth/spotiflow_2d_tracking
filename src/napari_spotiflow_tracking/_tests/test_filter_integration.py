@@ -304,3 +304,69 @@ class TestGpuFitColumnRenames:
         # Intensity stats reflect the constant-100 image
         assert props["mean_intensity"].iloc[0] == 100.0
         assert props["max_intensity"].iloc[0] == 100.0
+
+
+class TestDetectionAnalysisTab:
+    def test_widget_has_two_tabs(self, detection_widget):
+        widget, _ = detection_widget
+        assert widget._tabs.count() == 2
+        assert widget._tabs.tabText(0) == "Control"
+        assert widget._tabs.tabText(1) == "Analysis"
+
+    def test_analysis_tab_has_table_and_chart(self, detection_widget):
+        widget, _ = detection_widget
+        # Table view re-parented from FilterPanel.
+        assert widget._filter_panel.table_view is not None
+        # Spots-per-frame canvas exists.
+        assert widget._spots_per_frame_fig is not None
+        assert widget._spots_per_frame_canvas is not None
+
+    def test_spots_per_frame_chart_redraws_on_filter_change(self, detection_widget):
+        widget, viewer = detection_widget
+        # Synthetic detection: 3 spots in frame 0, 5 in frame 1
+        points = np.array([
+            [0, 1.0, 1.0], [0, 2.0, 2.0], [0, 3.0, 3.0],
+            [1, 4.0, 4.0], [1, 5.0, 5.0], [1, 6.0, 6.0], [1, 7.0, 7.0], [1, 8.0, 8.0],
+        ])
+        intensities = np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0])
+        widget._on_detection_finished(points, None, intensities)
+        # Force the FilterPanel to pick up the new layer
+        widget._filter_panel._refresh_layer_combo()
+        widget._filter_panel._on_layer_changed("Detected Spots")
+        # The chart should have a single Axes with 2 bars (frames 0 and 1)
+        ax = widget._spots_per_frame_fig.axes[0]
+        bars = [p for p in ax.patches]
+        assert len(bars) == 2
+
+
+class TestTrackingAnalysisTab:
+    def test_widget_has_two_tabs(self, tracking_widget):
+        widget, _ = tracking_widget
+        assert widget._tabs.count() == 2
+        assert widget._tabs.tabText(0) == "Control"
+        assert widget._tabs.tabText(1) == "Analysis"
+
+    def test_analysis_tab_has_table_and_two_charts(self, tracking_widget):
+        widget, _ = tracking_widget
+        assert widget._filter_panel.table_view is not None
+        assert widget._length_fig is not None
+        assert widget._speed_fig is not None
+
+    def test_charts_redraw_on_filter_change(self, tracking_widget):
+        widget, viewer = tracking_widget
+        # 2 tracks: short (length 2) and long (length 4) — distinct lengths
+        # so the histogram should have non-zero bars.
+        data = np.array([
+            [0, 0.0, 0.0], [1, 1.0, 0.0],
+            [0, 10.0, 10.0], [1, 11.0, 10.0], [2, 12.0, 10.0], [3, 13.0, 10.0],
+        ])
+        viewer.add_points(data, name="spots")
+        widget._points_combo.setCurrentText("spots")
+        widget._search_range.setValue(5.0)
+        widget._memory.setValue(0)
+        widget._track_btn.click()
+        widget._filter_panel._refresh_layer_combo()
+        widget._filter_panel._on_layer_changed("Tracked Spots")
+        # Both charts should have axes drawn
+        assert len(widget._length_fig.axes) == 1
+        assert len(widget._speed_fig.axes) == 1

@@ -5,6 +5,8 @@ import napari.layers
 import numpy as np
 from napari.utils.notifications import show_info, show_error
 import pandas as pd
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -15,9 +17,12 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from napari_spotiflow_tracking._mpl_theme import style_figure
 
 from napari_spotiflow_tracking._tracking import track_blobs, tracks_to_napari
 from napari_spotiflow_tracking._filter_panel import FilterPanel
@@ -36,14 +41,24 @@ class TrackingWidget(QWidget):
         outer_layout = QVBoxLayout()
         self.setLayout(outer_layout)
 
+        self._tabs = QTabWidget()
+        outer_layout.addWidget(self._tabs)
+
+        # === Control tab ============================================
+        control_tab = QWidget()
+        control_outer = QVBoxLayout()
+        control_tab.setLayout(control_outer)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        outer_layout.addWidget(scroll)
+        control_outer.addWidget(scroll)
 
         inner = QWidget()
         layout = QVBoxLayout()
         inner.setLayout(layout)
         scroll.setWidget(inner)
+
+        self._tabs.addTab(control_tab, "Control")
 
         # Input layers
         input_group = QGroupBox("Input")
@@ -120,6 +135,85 @@ class TrackingWidget(QWidget):
         layout.addStretch()
         self._refresh_points_combo()
         self._refresh_image_combo()
+
+        # === Analysis tab ===========================================
+        self._build_analysis_tab()
+
+    def _build_analysis_tab(self):
+        analysis_tab = QWidget()
+        analysis_outer = QVBoxLayout()
+        analysis_tab.setLayout(analysis_outer)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        analysis_outer.addWidget(scroll)
+
+        inner = QWidget()
+        layout = QVBoxLayout()
+        inner.setLayout(layout)
+        scroll.setWidget(inner)
+
+        # Filtered rows table — re-parented from the FilterPanel.
+        layout.addWidget(QLabel("Filtered rows:"))
+        layout.addWidget(self._filter_panel.table_view)
+
+        # Track length distribution.
+        layout.addWidget(QLabel("Track length distribution:"))
+        self._length_fig = Figure(figsize=(6, 3), tight_layout=True)
+        self._length_canvas = FigureCanvas(self._length_fig)
+        self._length_canvas.setFixedHeight(220)
+        layout.addWidget(self._length_canvas)
+
+        # Mean-speed distribution (chart labeled "Mean speed", which
+        # is the per-track velocity = total displacement / (length-1)).
+        layout.addWidget(QLabel("Mean speed distribution:"))
+        self._speed_fig = Figure(figsize=(6, 3), tight_layout=True)
+        self._speed_canvas = FigureCanvas(self._speed_fig)
+        self._speed_canvas.setFixedHeight(220)
+        layout.addWidget(self._speed_canvas)
+
+        layout.addStretch()
+        self._tabs.addTab(analysis_tab, "Analysis")
+
+        self._filter_panel.filteredDataChanged.connect(
+            self._on_filter_data_changed
+        )
+
+    def _on_filter_data_changed(self, df):
+        self._redraw_length(df)
+        self._redraw_speed(df)
+
+    def _redraw_length(self, df):
+        fig = self._length_fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.set_xlabel("Length (frames)")
+        ax.set_ylabel("Number of tracks")
+        if df is None or len(df) == 0 or "length" not in df.columns:
+            style_figure(fig)
+            self._length_canvas.draw_idle()
+            return
+        values = df["length"].dropna().to_numpy()
+        if values.size > 0:
+            ax.hist(values, bins=20, color="#7fcf9f", edgecolor="#3fa05f")
+        style_figure(fig)
+        self._length_canvas.draw_idle()
+
+    def _redraw_speed(self, df):
+        fig = self._speed_fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.set_xlabel("Mean speed (px/frame)")
+        ax.set_ylabel("Number of tracks")
+        if df is None or len(df) == 0 or "mean_speed" not in df.columns:
+            style_figure(fig)
+            self._speed_canvas.draw_idle()
+            return
+        values = df["mean_speed"].dropna().to_numpy()
+        if values.size > 0:
+            ax.hist(values, bins=20, color="#cf7f7f", edgecolor="#9f3f3f")
+        style_figure(fig)
+        self._speed_canvas.draw_idle()
 
     def _connect_events(self):
         self.viewer.layers.events.inserted.connect(self._on_layer_change)
