@@ -384,3 +384,236 @@ def fit_and_mask_2d(
         _paint_spot(mask, fit, points[i], i + 1, fallback_radius)
 
     return FitAndMaskResult(fits=fits, mask=mask)
+
+
+# ── GPU-batched 2D Gaussian fitting + mask generation ──────────────
+# Adapted from point_fitting.py at the project root. Copied (not imported)
+# so the package is self-contained. The mask is a (T, Y, X) stack of
+# independent 2D labelings per frame — labels do NOT connect across time.
+
+try:
+    import torch as _torch
+    from torchimize.functions import lsq_lma_parallel as _lsq_lma_parallel
+    HAS_GPU_FIT = _torch.cuda.is_available()
+except ImportError:
+    HAS_GPU_FIT = False
+
+
+def _gaussian_2d_batched(p, xy):
+    amp = p[:, 0:1]; x0 = p[:, 1:2]; y0 = p[:, 2:3]
+    sx = p[:, 3:4]; sy = p[:, 4:5]; bg = p[:, 5:6]
+    x = xy[0:1, :]; y = xy[1:2, :]
+    dx = (x - x0) / sx
+    dy = (y - y0) / sy
+    out = amp * _torch.exp(-0.5 * (dx * dx + dy * dy)) + bg
+    return out.unsqueeze(1)
+
+
+def _residuals(p, data, xy):
+    return _gaussian_2d_batched(p, xy) - data
+
+
+def _extract_crops_vec(stack, df, win):
+    T, H, W = stack.shape
+    pts_y = np.round(df["y"].to_numpy()).astype(np.int64)
+    pts_x = np.round(df["x"].to_numpy()).astype(np.int64)
+    pts_t = df["time"].to_numpy().astype(np.int64)
+    valid = (
+        (pts_y >= win) & (pts_y < H - win)
+        & (pts_x >= win) & (pts_x < W - win)
+        & (pts_t >= 0) & (pts_t < T)
+    )
+    ty = pts_y[valid]; tx = pts_x[valid]; tt = pts_t[valid]
+    dy, dx = np.meshgrid(np.arange(-win, win + 1),
+                         np.arange(-win, win + 1), indexing="ij")
+    ys = ty[:, None, None] + dy[None]
+    xs = tx[:, None, None] + dx[None]
+    ts = tt[:, None, None]
+    crops = stack[ts, ys, xs].astype(np.float32)
+    return crops, valid
+
+
+def fit_all_frames_gpu(
+    stack: np.ndarray,
+    df,
+    win: int = 2,
+    device: str = "cuda",
+    max_iter: int = 50,
+    chunk_size: int = 20000,
+):
+    """Batch 2D Gaussian fit across an entire (T, Y, X) stack via torchimize.
+
+    ``df`` must have columns ``time, y, x``. Output adds
+    ``amp, x_fit, y_fit, sigma_x, sigma_y, bg``.
+    """
+    import pandas as pd
+
+    size = 2 * win + 1
+    M = size * size
+    n_total = len(df)
+
+    crops, valid = _extract_crops_vec(stack, df, win)
+    N = len(crops)
+
+    amp_out = np.full(n_total, np.nan, dtype=np.float64)
+    x_out = np.full(n_total, np.nan, dtype=np.float64)
+    y_out = np.full(n_total, np.nan, dtype=np.float64)
+    sx_out = np.full(n_total, np.nan, dtype=np.float64)
+    sy_out = np.full(n_total, np.nan, dtype=np.float64)
+    bg_out = np.full(n_total, np.nan, dtype=np.float64)
+
+    if N == 0:
+        return df.assign(
+            amp=amp_out, x_fit=x_out, y_fit=y_out,
+            sigma_x=sx_out, sigma_y=sy_out, bg=bg_out,
+        )
+
+    yy, xx = _torch.meshgrid(
+        _torch.arange(-win, win + 1, dtype=_torch.float32),
+        _torch.arange(-win, win + 1, dtype=_torch.float32),
+        indexing="ij",
+    )
+    xy = _torch.stack([xx.flatten(), yy.flatten()]).to(device)
+    wvec = _torch.ones(1, device=device)
+
+    final_all = np.empty((N, 6), dtype=np.float32)
+
+    for start in range(0, N, chunk_size):
+        end = min(start + chunk_size, N)
+        chunk = crops[start:end]
+        B = len(chunk)
+
+        data = _torch.from_numpy(chunk.reshape(B, 1, M)).to(device)
+        d2 = data[:, 0, :]
+        amp0 = d2.max(1).values - d2.min(1).values
+        bg0 = d2.min(1).values
+        init = _torch.stack([
+            amp0,
+            _torch.zeros(B, device=device),
+            _torch.zeros(B, device=device),
+            _torch.full((B,), 1.5, device=device),
+            _torch.full((B,), 1.5, device=device),
+            bg0,
+        ], dim=1)
+
+        coeffs_list = _lsq_lma_parallel(
+            p=init, function=_residuals, args=(data, xy), wvec=wvec,
+            ftol=1e-6, ptol=1e-6, gtol=1e-6, max_iter=max_iter,
+        )
+        final_all[start:end] = coeffs_list[-1].cpu().numpy()
+
+    pts_y = np.round(df["y"].to_numpy()).astype(np.int64)
+    pts_x = np.round(df["x"].to_numpy()).astype(np.int64)
+
+    final = final_all.astype(np.float64)
+    amp_out[valid] = final[:, 0]
+    x_out[valid] = pts_x[valid] + final[:, 1]
+    y_out[valid] = pts_y[valid] + final[:, 2]
+    sx_out[valid] = np.abs(final[:, 3])
+    sy_out[valid] = np.abs(final[:, 4])
+    bg_out[valid] = final[:, 5]
+
+    return df.assign(
+        amp=amp_out, x_fit=x_out, y_fit=y_out,
+        sigma_x=sx_out, sigma_y=sy_out, bg=bg_out,
+    )
+
+
+def make_gpu_spot_mask(
+    stack_shape,
+    df,
+    intensity_stack=None,
+    dtype=np.int32,
+    min_radius: float = 1.0,
+    max_radius: float | None = None,
+    label_col: str | None = None,
+):
+    """Build a ``(T, Y, X)`` stack of per-frame 2D labels from fitted sigmas.
+
+    Each frame in the output is an independent 2D labels image (labels are
+    not connected across time). When ``intensity_stack`` is given, also
+    computes per-spot ``area, mean_intensity, max_intensity, spot_radius``.
+
+    The output column names match our regionprops conventions
+    (``area``, ``mean_intensity``, ``max_intensity``) so the FilterPanel
+    whitelist picks them up directly. ``spot_radius`` is kept under that
+    name (no regionprops equivalent).
+    """
+    import pandas as pd
+
+    T, H, W = stack_shape
+    n_total = len(df)
+
+    valid = df[["x", "y", "sigma_x", "sigma_y", "time"]].notna().all(axis=1)
+    sub = df.loc[valid]
+
+    area_out = np.full(n_total, np.nan, dtype=np.float64)
+    mean_out = np.full(n_total, np.nan, dtype=np.float64)
+    max_out = np.full(n_total, np.nan, dtype=np.float64)
+    radii_out = np.full(n_total, np.nan, dtype=np.float64)
+
+    if len(sub) == 0:
+        return np.zeros(stack_shape, dtype=dtype), df.assign(
+            area=area_out,
+            mean_intensity=mean_out,
+            max_intensity=max_out,
+            spot_radius=radii_out,
+        )
+
+    cx = sub["x"].to_numpy()
+    cy = sub["y"].to_numpy()
+    ct = sub["time"].to_numpy().astype(np.int64) - 1
+    sx = sub["sigma_x"].to_numpy()
+    sy = sub["sigma_y"].to_numpy()
+    valid_idx = np.where(valid)[0]
+
+    if label_col is not None:
+        labels = sub[label_col].to_numpy().astype(dtype)
+    else:
+        labels = np.arange(1, len(sub) + 1, dtype=dtype)
+
+    radii = np.sqrt(2.0) * 0.5 * (sx + sy)
+    radii = np.clip(radii, min_radius, max_radius if max_radius else np.inf)
+    radii_out[valid_idx] = radii
+
+    mask = np.zeros((T, H, W), dtype=dtype)
+    r_int = np.ceil(radii).astype(np.int32)
+
+    for r in np.unique(r_int):
+        sel = np.where(r_int == r)[0]
+        size = 2 * r + 1
+        yy, xx = np.ogrid[-r:r + 1, -r:r + 1]
+
+        for i in sel:
+            t = ct[i]
+            xi = int(round(cx[i])) - r
+            yi = int(round(cy[i])) - r
+            dx = cx[i] - round(cx[i])
+            dy = cy[i] - round(cy[i])
+            disk = (xx - dx) ** 2 + (yy - dy) ** 2 <= radii[i] ** 2
+
+            x_start = max(0, xi); x_end = min(W, xi + size)
+            y_start = max(0, yi); y_end = min(H, yi + size)
+            dx_start = x_start - xi; dx_end = dx_start + (x_end - x_start)
+            dy_start = y_start - yi; dy_end = dy_start + (y_end - y_start)
+            if x_end <= x_start or y_end <= y_start:
+                continue
+
+            local_disk = disk[dy_start:dy_end, dx_start:dx_end]
+            target = mask[t, y_start:y_end, x_start:x_end]
+            np.copyto(target, labels[i], where=local_disk & (target == 0))
+
+            i_global = valid_idx[i]
+            area_out[i_global] = int(local_disk.sum())
+            if intensity_stack is not None and local_disk.any():
+                disk_pixels = intensity_stack[t, y_start:y_end, x_start:x_end][local_disk]
+                mean_out[i_global] = disk_pixels.mean()
+                max_out[i_global] = disk_pixels.max()
+
+    df_out = df.assign(
+        area=area_out,
+        mean_intensity=mean_out,
+        max_intensity=max_out,
+        spot_radius=radii_out,
+    )
+    return mask, df_out

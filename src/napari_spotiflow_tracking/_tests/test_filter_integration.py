@@ -264,3 +264,43 @@ class TestFilterEndToEndTracking:
         sibling = viewer.layers["Tracked Spots (filtered)"]
         # 4 vertices for the single long track
         assert len(sibling.data) == 4
+
+
+class TestGpuFitColumnRenames:
+    """Verify make_gpu_spot_mask emits regionprops-style column names.
+
+    Does not exercise the actual GPU fitter — just the post-fit mask + props
+    builder, which is pure-numpy and works on CPU.
+    """
+
+    def test_make_gpu_spot_mask_returns_regionprops_columns(self):
+        from napari_spotiflow_tracking._fitting import make_gpu_spot_mask
+        # 1 frame, 16x16 image, one fitted spot at (8, 8) with sigma 1.5
+        df = pd.DataFrame({
+            "time": [1],
+            "x": [8.0],
+            "y": [8.0],
+            "x_fit": [8.0],
+            "y_fit": [8.0],
+            "sigma_x": [1.5],
+            "sigma_y": [1.5],
+        })
+        intensity_stack = np.full((1, 16, 16), 100.0)
+        mask, props = make_gpu_spot_mask(
+            stack_shape=(1, 16, 16), df=df,
+            intensity_stack=intensity_stack,
+        )
+        # Column-rename contract
+        assert "area" in props.columns
+        assert "mean_intensity" in props.columns
+        assert "max_intensity" in props.columns
+        assert "spot_radius" in props.columns
+        # And the OLD column names are NOT present
+        assert "spot_area" not in props.columns
+        assert "spot_mean" not in props.columns
+        assert "spot_max" not in props.columns
+        # Mask is non-zero around the spot
+        assert mask.sum() > 0
+        # Intensity stats reflect the constant-100 image
+        assert props["mean_intensity"].iloc[0] == 100.0
+        assert props["max_intensity"].iloc[0] == 100.0

@@ -252,6 +252,96 @@ class N2VWorker(QThread):
             self._process.join(timeout=3)
 
 
+class GpuFitMaskWorker(QThread):
+    """Run GPU Gaussian fit + mask generation as a background batch.
+
+    Takes a 3D image stack and a (N, 3) points array (with columns
+    frame, y, x) and produces a (T, Y, X) stack of 2D labels per frame
+    plus a per-spot props DataFrame whose columns include ``area``,
+    ``mean_intensity``, ``max_intensity``, ``spot_radius`` (matching the
+    FilterPanel whitelist where possible).
+    """
+
+    progress = Signal(str)
+    finished = Signal(object, object)  # (mask, props_df)
+    errored = Signal(str)
+
+    def __init__(
+        self,
+        image: np.ndarray,
+        points: np.ndarray,
+        win: int = 2,
+        max_iter: int = 50,
+        chunk_size: int = 20000,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._image = image
+        self._points = points
+        self._win = win
+        self._max_iter = max_iter
+        self._chunk_size = chunk_size
+
+    def run(self):
+        try:
+            import pandas as pd
+
+            from napari_spotiflow_tracking._fitting import (
+                fit_all_frames_gpu,
+                make_gpu_spot_mask,
+            )
+
+            self.progress.emit("Preparing points DataFrame...")
+            pts = np.asarray(self._points)
+            if pts.ndim != 2 or pts.shape[0] == 0:
+                self.errored.emit("No detections to fit.")
+                return
+            if pts.shape[1] == 3:
+                # (frame, y, x); convert frame to 1-indexed time as expected
+                # by fit_all_frames_gpu's contract.
+                df = pd.DataFrame({
+                    "time": pts[:, 0].astype(int) + 1,
+                    "y": pts[:, 1].astype(float),
+                    "x": pts[:, 2].astype(float),
+                })
+            else:
+                self.errored.emit(
+                    f"Expected (N, 3) points array; got shape {pts.shape}"
+                )
+                return
+
+            stack = self._image
+            if stack.ndim == 2:
+                stack = stack[np.newaxis, ...]
+
+            self.progress.emit("GPU Gaussian fitting...")
+            fitted = fit_all_frames_gpu(
+                stack, df, win=self._win,
+                max_iter=self._max_iter, chunk_size=self._chunk_size,
+            )
+            # make_gpu_spot_mask reads x_fit/y_fit-like columns as x/y after
+            # the fit completes; in our flow we keep the original (rounded)
+            # x/y as the centers since the points come from the detector.
+            # The fitted x_fit/y_fit are sub-pixel refinements; using the
+            # original integer-rounded x/y for the mask placement is
+            # consistent with the existing detection flow.
+            self.progress.emit("Building mask + props...")
+            mask, props_df = make_gpu_spot_mask(
+                stack_shape=stack.shape,
+                df=fitted,
+                intensity_stack=stack,
+            )
+            # Add a `frame` column (0-indexed) so it matches the regionprops
+            # convention used by _merge_regionprops_into_points (which keys
+            # on frame, y, x).
+            props_df = props_df.copy()
+            props_df["frame"] = props_df["time"].astype(int) - 1
+            self.finished.emit(mask, props_df)
+        except Exception:
+            import traceback
+            self.errored.emit(traceback.format_exc())
+
+
 class MaskGenerationWorker(QThread):
     """Background worker for Gaussian fitting + mask painting + regionprops.
 
@@ -286,7 +376,7 @@ class MaskGenerationWorker(QThread):
 
         properties = [
             "label", "area", "centroid", "mean_intensity", "max_intensity",
-            "min_intensity", "equivalent_diameter", "perimeter", "solidity",
+            "min_intensity",
         ]
         table = regionprops_table(
             mask, intensity_image=image, properties=properties,

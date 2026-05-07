@@ -38,6 +38,14 @@ class DetectionWidget(QWidget):
         self._last_points: np.ndarray | None = None
         self._pbr = None  # napari progress bar
         self._mask_target_points: napari.layers.Points | None = None
+        # GPU fit + mask path (replaces "Mask Generation" group when active)
+        try:
+            from napari_spotiflow_tracking._fitting import HAS_GPU_FIT
+        except ImportError:
+            HAS_GPU_FIT = False
+        self._has_gpu_fit = HAS_GPU_FIT
+        self._gpu_fit_worker = None
+        self._gpu_pending_points_layer = None
         self._setup_ui()
         self._connect_events()
 
@@ -216,6 +224,9 @@ class DetectionWidget(QWidget):
         mask_group.setLayout(mask_layout)
         layout.addWidget(mask_group)
 
+        if self._has_gpu_fit:
+            mask_group.setVisible(False)
+
         # Detect button + quick preview + cancel
         detect_row = QHBoxLayout()
         self._detect_btn = QPushButton("Detect Spots")
@@ -356,7 +367,7 @@ class DetectionWidget(QWidget):
             method=method,
             prob_thresh=None if self._auto_prob_cb.isChecked() else self._prob_thresh.value(),
             min_distance=self._min_distance.value(),
-            generate_mask=self._generate_mask_cb.isChecked(),
+            generate_mask=False if self._has_gpu_fit else self._generate_mask_cb.isChecked(),
             fit_backend=self._backend_combo.currentText(),
             log_min_sigma=self._log_min_sigma.value(),
             log_max_sigma=self._log_max_sigma.value(),
@@ -422,7 +433,7 @@ class DetectionWidget(QWidget):
             method=method,
             prob_thresh=None if self._auto_prob_cb.isChecked() else self._prob_thresh.value(),
             min_distance=self._min_distance.value(),
-            generate_mask=self._generate_mask_cb.isChecked(),
+            generate_mask=False if self._has_gpu_fit else self._generate_mask_cb.isChecked(),
             fit_backend=self._backend_combo.currentText(),
             log_min_sigma=self._log_min_sigma.value(),
             log_max_sigma=self._log_max_sigma.value(),
@@ -485,6 +496,29 @@ class DetectionWidget(QWidget):
                 face_color="red",
                 metadata={"properties": df},
             )
+
+        # GPU mode: kick off batch fit + mask + props on the source image.
+        if self._has_gpu_fit and n_spots > 0 and points.shape[1] == 3:
+            from napari_spotiflow_tracking._workers import GpuFitMaskWorker
+
+            image_name = self._image_combo.currentText()
+            if image_name and image_name in self.viewer.layers:
+                src_image = np.asarray(self.viewer.layers[image_name].data)
+                self._gpu_pending_points_layer = next(
+                    (l for l in self.viewer.layers if l.name == "Detected Spots"),
+                    None,
+                )
+                self._gpu_fit_worker = GpuFitMaskWorker(
+                    image=src_image, points=points,
+                )
+                self._gpu_fit_worker.progress.connect(
+                    lambda msg: self._status_label.setText(msg)
+                )
+                self._gpu_fit_worker.finished.connect(self._on_gpu_fit_finished)
+                self._gpu_fit_worker.errored.connect(self._on_gpu_fit_error)
+                show_info("GPU: fitting + mask generation in progress...")
+                self._gpu_fit_worker.start()
+
         if masks is not None:
             mask_data = np.asarray(masks)
             mask_layer = self.viewer.add_labels(mask_data, name="Spot Masks", opacity=0.4)
@@ -569,6 +603,27 @@ class DetectionWidget(QWidget):
         n_regions = len(props_df)
         show_info(f"Done — mask generated ({n_regions} regions with properties).")
         self._status_label.setText(f"Mask generated ({n_regions} regions).")
+
+    def _on_gpu_fit_finished(self, mask, props_df):
+        mask_layer = self.viewer.add_labels(
+            np.asarray(mask), name="Spot Masks", opacity=0.4,
+        )
+        mask_layer.metadata["regionprops"] = props_df
+        target = self._gpu_pending_points_layer
+        if target is not None and target in self.viewer.layers:
+            self._merge_regionprops_into_points(target, props_df)
+        self._gpu_pending_points_layer = None
+        self._gpu_fit_worker = None
+        n_regions = len(props_df.dropna(subset=["area"]))
+        msg = f"GPU mask + props ready ({n_regions} regions)."
+        self._status_label.setText(msg)
+        show_info(msg)
+
+    def _on_gpu_fit_error(self, msg: str):
+        self._gpu_pending_points_layer = None
+        self._gpu_fit_worker = None
+        show_error(f"GPU fit/mask failed: {msg[:200]}")
+        self._status_label.setText("GPU fit/mask failed.")
 
     def _merge_regionprops_into_points(self, points_layer, props_df: pd.DataFrame):
         existing = points_layer.metadata.get("properties")
