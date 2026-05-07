@@ -166,15 +166,6 @@ class FilterPanel(QWidget):
         hist_outer = QVBoxLayout()
         hist_group.setLayout(hist_outer)
 
-        cb_scroll = QScrollArea()
-        cb_scroll.setWidgetResizable(True)
-        cb_scroll.setMaximumHeight(80)
-        cb_inner = QWidget()
-        self._hist_checkbox_layout = QVBoxLayout()
-        cb_inner.setLayout(self._hist_checkbox_layout)
-        cb_scroll.setWidget(cb_inner)
-        hist_outer.addWidget(cb_scroll)
-
         self._hist_fig = Figure(figsize=(6, 3), tight_layout=True)
         self._hist_canvas = FigureCanvas(self._hist_fig)
         self._hist_canvas.setFixedHeight(220)
@@ -358,15 +349,11 @@ class FilterPanel(QWidget):
             w = item.widget()
             if w is not None:
                 w.setParent(None)
-        for cb in self._hist_checkboxes.values():
-            cb.setParent(None)
+        # Histogram checkboxes are now nested inside the slider-row
+        # containers; they're freed automatically when those containers
+        # are reparented above. Just drop the dict references.
         self._hist_checkboxes = {}
         self._hist_colors = {}
-        while self._hist_checkbox_layout.count():
-            item = self._hist_checkbox_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
 
     def _is_filterable_column(self, col: str) -> bool:
         if self._layer_kind == "Points":
@@ -381,6 +368,12 @@ class FilterPanel(QWidget):
     def _normalize_histogram(self) -> bool:
         return self._layer_kind == "Points"
 
+    # Layout constants for slider rows. The histogram checkbox lives on
+    # the left of each row; non-histogram rows get a same-width spacer so
+    # the column labels and sliders line up across rows.
+    _ROW_CB_WIDTH = 22
+    _ROW_LABEL_WIDTH = 130
+
     def _build_sliders(self, df: pd.DataFrame):
         cmap = colormaps.get_cmap("tab10")
         color_idx = 0
@@ -391,9 +384,32 @@ class FilterPanel(QWidget):
                 continue
             col_min = df[col].min()
             col_max = df[col].max()
+
+            row = QHBoxLayout()
+
+            # Per-row histogram checkbox (or fixed-width spacer for alignment).
+            if self._is_histogram_column(col) and col_min != col_max:
+                cb = QCheckBox()
+                cb.setChecked(True)
+                cb.setToolTip(f"Show {col} in histogram")
+                cb.setFixedWidth(self._ROW_CB_WIDTH)
+                cb.toggled.connect(self._redraw_histogram)
+                row.addWidget(cb)
+                self._hist_checkboxes[col] = cb
+            else:
+                spacer = QWidget()
+                spacer.setFixedWidth(self._ROW_CB_WIDTH)
+                row.addWidget(spacer)
+
+            label = QLabel(col)
+            label.setMinimumWidth(self._ROW_LABEL_WIDTH)
+            label.setMaximumWidth(self._ROW_LABEL_WIDTH)
+            row.addWidget(label)
+
             if col_min == col_max:
-                row = QHBoxLayout()
-                row.addWidget(QLabel(f"{col}: constant {col_min}"))
+                # Constant column: no slider, just a value indicator.
+                row.addWidget(QLabel(f"constant {col_min}"))
+                row.addStretch()
                 container = QWidget()
                 container.setLayout(row)
                 self._sliders_layout.addWidget(container)
@@ -404,8 +420,6 @@ class FilterPanel(QWidget):
             color_idx += 1
             self._hist_colors[col] = color
 
-            row = QHBoxLayout()
-            row.addWidget(QLabel(col))
             if pd.api.types.is_integer_dtype(df[col]):
                 slider = QLabeledRangeSlider(Qt.Horizontal)
                 slider.setRange(int(col_min), int(col_max))
@@ -415,6 +429,7 @@ class FilterPanel(QWidget):
                 slider.setRange(float(col_min), float(col_max))
                 slider.setValue((float(col_min), float(col_max)))
             row.addWidget(slider)
+
             container = QWidget()
             container.setLayout(row)
             self._sliders_layout.addWidget(container)
@@ -423,13 +438,6 @@ class FilterPanel(QWidget):
             slider.valueChanged.connect(
                 lambda v, c=col: self._on_slider_changed(c, v)
             )
-
-            if self._is_histogram_column(col):
-                cb = QCheckBox(col)
-                cb.setChecked(True)
-                cb.toggled.connect(self._redraw_histogram)
-                self._hist_checkbox_layout.addWidget(cb)
-                self._hist_checkboxes[col] = cb
 
     def _update_status(self):
         if self._layer_combo.count() == 0:
