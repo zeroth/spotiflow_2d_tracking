@@ -562,7 +562,7 @@ def make_gpu_spot_mask(
 
     cx = sub["x"].to_numpy()
     cy = sub["y"].to_numpy()
-    ct = sub["time"].to_numpy().astype(np.int64) - 1
+    ct = sub["time"].to_numpy().astype(np.int64)
     sx = sub["sigma_x"].to_numpy()
     sy = sub["sigma_y"].to_numpy()
     valid_idx = np.where(valid)[0]
