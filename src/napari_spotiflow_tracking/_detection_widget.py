@@ -9,7 +9,10 @@ import numpy as np
 import pandas as pd
 from napari.utils.notifications import show_info, show_error
 from napari.utils import progress
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import (
+    FigureCanvasQTAgg as FigureCanvas,
+    NavigationToolbar2QT as NavigationToolbar,
+)
 from matplotlib.figure import Figure
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -322,6 +325,10 @@ class DetectionWidget(QWidget):
         self._spots_per_frame_fig = Figure(figsize=(6, 3), tight_layout=True)
         self._spots_per_frame_canvas = FigureCanvas(self._spots_per_frame_fig)
         self._spots_per_frame_canvas.setFixedHeight(280)
+        self._spots_per_frame_toolbar = NavigationToolbar(
+            self._spots_per_frame_canvas, self,
+        )
+        layout.addWidget(self._spots_per_frame_toolbar)
         layout.addWidget(self._spots_per_frame_canvas)
 
         layout.addStretch()

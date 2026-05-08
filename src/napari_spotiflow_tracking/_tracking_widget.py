@@ -5,7 +5,10 @@ import napari.layers
 import numpy as np
 from napari.utils.notifications import show_info, show_error
 import pandas as pd
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import (
+    FigureCanvasQTAgg as FigureCanvas,
+    NavigationToolbar2QT as NavigationToolbar,
+)
 from matplotlib.figure import Figure
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
@@ -163,6 +166,8 @@ class TrackingWidget(QWidget):
         self._length_fig = Figure(figsize=(6, 3), tight_layout=True)
         self._length_canvas = FigureCanvas(self._length_fig)
         self._length_canvas.setFixedHeight(220)
+        self._length_toolbar = NavigationToolbar(self._length_canvas, self)
+        layout.addWidget(self._length_toolbar)
         layout.addWidget(self._length_canvas)
 
         # Mean-speed distribution (chart labeled "Mean speed", which
@@ -179,6 +184,8 @@ class TrackingWidget(QWidget):
         self._speed_fig = Figure(figsize=(6, 3), tight_layout=True)
         self._speed_canvas = FigureCanvas(self._speed_fig)
         self._speed_canvas.setFixedHeight(220)
+        self._speed_toolbar = NavigationToolbar(self._speed_canvas, self)
+        layout.addWidget(self._speed_toolbar)
         layout.addWidget(self._speed_canvas)
 
         layout.addStretch()
