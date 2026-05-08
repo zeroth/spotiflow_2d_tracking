@@ -100,6 +100,42 @@ def _subtract_stack_mean(image_stack: np.ndarray) -> np.ndarray:
 # ── segmentation ────────────────────────────────────────────────────
 
 
+def _load_spotiflow(model_name: str, device: str):
+    """Load a pretrained Spotiflow model."""
+    from spotiflow.model import Spotiflow
+    return Spotiflow.from_pretrained(model_name, map_location=device)
+
+
+def _detect_all_frames(
+    stack: np.ndarray,
+    model,
+    prob_thresh: float,
+    min_distance: int,
+) -> pd.DataFrame:
+    """Run Spotiflow per frame; return a DataFrame with columns time, y, x.
+
+    The column name `time` matches what `_fit_all_frames_gpu` expects.
+    """
+    if stack.ndim != 3:
+        raise ValueError(f"Expected 3D (T,Y,X) stack, got {stack.ndim}D")
+
+    rows_t, rows_y, rows_x = [], [], []
+    for t in tqdm(range(stack.shape[0]), desc="  detect", leave=False, unit="frame"):
+        points, _ = model.predict(
+            stack[t], prob_thresh=prob_thresh,
+            min_distance=min_distance, verbose=False,
+        )
+        if len(points) == 0:
+            continue
+        ys = points[:, 0].astype(float)
+        xs = points[:, 1].astype(float)
+        rows_t.extend([t] * len(points))
+        rows_y.extend(ys.tolist())
+        rows_x.extend(xs.tolist())
+
+    return pd.DataFrame({"time": rows_t, "y": rows_y, "x": rows_x})
+
+
 # ── fitting + mask ──────────────────────────────────────────────────
 
 
