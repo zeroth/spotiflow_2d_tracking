@@ -29,6 +29,13 @@ from tqdm import tqdm
 # ── helpers ─────────────────────────────────────────────────────────
 
 
+def _select_device(prefer: str = "cuda") -> str:
+    """Return 'cuda' if requested and available, else 'cpu'."""
+    if prefer == "cuda" and torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 # ── segmentation ────────────────────────────────────────────────────
 
 
