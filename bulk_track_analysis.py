@@ -139,6 +139,124 @@ def _detect_all_frames(
 # ── fitting + mask ──────────────────────────────────────────────────
 
 
+def _gaussian_2d_batched(p, xy):
+    amp = p[:, 0:1]; x0 = p[:, 1:2]; y0 = p[:, 2:3]
+    sx = p[:, 3:4]; sy = p[:, 4:5]; bg = p[:, 5:6]
+    x = xy[0:1, :]; y = xy[1:2, :]
+    dx = (x - x0) / sx
+    dy = (y - y0) / sy
+    out = amp * torch.exp(-0.5 * (dx * dx + dy * dy)) + bg
+    return out.unsqueeze(1)
+
+
+def _fit_residuals(p, data, xy):
+    return _gaussian_2d_batched(p, xy) - data
+
+
+def _extract_crops_vec(stack: np.ndarray, df: pd.DataFrame, win: int):
+    T, H, W = stack.shape
+    pts_y = np.round(df["y"].to_numpy()).astype(np.int64)
+    pts_x = np.round(df["x"].to_numpy()).astype(np.int64)
+    pts_t = df["time"].to_numpy().astype(np.int64)
+    valid = (
+        (pts_y >= win) & (pts_y < H - win)
+        & (pts_x >= win) & (pts_x < W - win)
+        & (pts_t >= 0) & (pts_t < T)
+    )
+    ty = pts_y[valid]; tx = pts_x[valid]; tt = pts_t[valid]
+    dy, dx = np.meshgrid(np.arange(-win, win + 1),
+                         np.arange(-win, win + 1), indexing="ij")
+    ys = ty[:, None, None] + dy[None]
+    xs = tx[:, None, None] + dx[None]
+    ts = tt[:, None, None]
+    crops = stack[ts, ys, xs].astype(np.float32)
+    return crops, valid
+
+
+def _fit_all_frames_gpu(
+    stack: np.ndarray,
+    df: pd.DataFrame,
+    win: int = 2,
+    device: str = "cuda",
+    max_iter: int = 50,
+    chunk_size: int = 20000,
+) -> pd.DataFrame:
+    """Batch 2D Gaussian fit across an entire (T,Y,X) stack via torchimize.
+
+    `df` must have columns time, y, x. Output adds amp, x_fit, y_fit,
+    sigma_x, sigma_y, bg.
+    """
+    size = 2 * win + 1
+    M = size * size
+    n_total = len(df)
+
+    crops, valid = _extract_crops_vec(stack, df, win)
+    N = len(crops)
+
+    amp_out = np.full(n_total, np.nan, dtype=np.float64)
+    x_out = np.full(n_total, np.nan, dtype=np.float64)
+    y_out = np.full(n_total, np.nan, dtype=np.float64)
+    sx_out = np.full(n_total, np.nan, dtype=np.float64)
+    sy_out = np.full(n_total, np.nan, dtype=np.float64)
+    bg_out = np.full(n_total, np.nan, dtype=np.float64)
+
+    if N == 0:
+        return df.assign(
+            amp=amp_out, x_fit=x_out, y_fit=y_out,
+            sigma_x=sx_out, sigma_y=sy_out, bg=bg_out,
+        )
+
+    yy, xx = torch.meshgrid(
+        torch.arange(-win, win + 1, dtype=torch.float32),
+        torch.arange(-win, win + 1, dtype=torch.float32),
+        indexing="ij",
+    )
+    xy = torch.stack([xx.flatten(), yy.flatten()]).to(device)
+    wvec = torch.ones(1, device=device)
+
+    final_all = np.empty((N, 6), dtype=np.float32)
+
+    for start in range(0, N, chunk_size):
+        end = min(start + chunk_size, N)
+        chunk = crops[start:end]
+        B = len(chunk)
+
+        data = torch.from_numpy(chunk.reshape(B, 1, M)).to(device)
+        d2 = data[:, 0, :]
+        amp0 = d2.max(1).values - d2.min(1).values
+        bg0 = d2.min(1).values
+        init = torch.stack([
+            amp0,
+            torch.zeros(B, device=device),
+            torch.zeros(B, device=device),
+            torch.full((B,), 1.5, device=device),
+            torch.full((B,), 1.5, device=device),
+            bg0,
+        ], dim=1)
+
+        coeffs_list = lsq_lma_parallel(
+            p=init, function=_fit_residuals, args=(data, xy), wvec=wvec,
+            ftol=1e-6, ptol=1e-6, gtol=1e-6, max_iter=max_iter,
+        )
+        final_all[start:end] = coeffs_list[-1].cpu().numpy()
+
+    pts_y = np.round(df["y"].to_numpy()).astype(np.int64)
+    pts_x = np.round(df["x"].to_numpy()).astype(np.int64)
+
+    final = final_all.astype(np.float64)
+    amp_out[valid] = final[:, 0]
+    x_out[valid] = pts_x[valid] + final[:, 1]
+    y_out[valid] = pts_y[valid] + final[:, 2]
+    sx_out[valid] = np.abs(final[:, 3])
+    sy_out[valid] = np.abs(final[:, 4])
+    bg_out[valid] = final[:, 5]
+
+    return df.assign(
+        amp=amp_out, x_fit=x_out, y_fit=y_out,
+        sigma_x=sx_out, sigma_y=sy_out, bg=bg_out,
+    )
+
+
 # ── tracking + analysis ─────────────────────────────────────────────
 
 
