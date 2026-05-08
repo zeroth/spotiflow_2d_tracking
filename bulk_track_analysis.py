@@ -418,6 +418,32 @@ def _compute_track_properties(
 # ── plotting ────────────────────────────────────────────────────────
 
 
+def _plot_length_hist(track_props: pd.DataFrame, out_path: Path) -> None:
+    """Histogram of per-track length."""
+    fig, ax = plt.subplots(figsize=(6, 4))
+    if len(track_props):
+        ax.hist(track_props["length"], bins=30, color="steelblue", edgecolor="black")
+    ax.set_xlabel("Track length (frames)")
+    ax.set_ylabel("# tracks")
+    ax.set_title("Track length distribution")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def _plot_speed_hist(track_props: pd.DataFrame, out_path: Path) -> None:
+    """Histogram of per-track mean_speed."""
+    fig, ax = plt.subplots(figsize=(6, 4))
+    if len(track_props):
+        ax.hist(track_props["mean_speed"], bins=30, color="seagreen", edgecolor="black")
+    ax.set_xlabel("Mean speed (px / frame)")
+    ax.set_ylabel("# tracks")
+    ax.set_title("Track mean-speed distribution")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 # ── per-file pipeline ───────────────────────────────────────────────
 
 
