@@ -48,6 +48,7 @@ python bulk_track_analysis.py <input_dir> <output_dir> [options]
 | `--search-range` | `5` | trackpy `search_range`. |
 | `--memory` | `3` | trackpy `memory`. |
 | `--min-track-length` | `2` | Minimum track length included in plots (CSV is unfiltered). |
+| `--max-tracks-plot` | `200` | Cap on the number of tracks drawn in the per-track plots (`length_per_track.png`, `speed_per_track.png`). Tracks are sorted by length descending; only the top N are plotted. Has no effect on histograms or CSVs. |
 | `--skip-existing` | off | Skip an input if its output sub-folder already exists. |
 | `--verbose` | off | Print per-stage progress to stderr. |
 
@@ -114,10 +115,11 @@ with the traceback, and the loop continues to the next file.
   (after `min_track_length` filter), 150 DPI.
 - **`speed_hist.png`** — histogram of `mean_speed`, 150 DPI.
 - **`length_per_track.png`** — one line per track of cumulative
-  displacement vs frame. Capped at the top 200 longest tracks (sorted
-  by length descending) to keep the plot legible.
+  displacement vs frame. Capped at the top `--max-tracks-plot` longest
+  tracks (sorted by length descending) to keep the plot legible.
 - **`speed_per_track.png`** — one line per track of instantaneous speed
-  (frame-to-frame Euclidean distance) vs frame. Same 200-track cap.
+  (frame-to-frame Euclidean distance) vs frame. Same `--max-tracks-plot`
+  cap.
 
 `<output_dir>/run.log` — one line per processed file:
 `<stem>\tn_spots=<int>\tn_tracks=<int>\tstatus=OK|FAIL\t<reason if any>`.
@@ -149,8 +151,8 @@ _compute_track_properties(tracked_df, image)
 # ── plotting ────────────────────────────────────────────────────────
 _plot_length_hist(track_props, out_path)
 _plot_speed_hist(track_props, out_path)
-_plot_length_per_track(tracked_df, out_path, max_tracks=200)
-_plot_speed_per_track(tracked_df, out_path, max_tracks=200)
+_plot_length_per_track(tracked_df, out_path, max_tracks)
+_plot_speed_per_track(tracked_df, out_path, max_tracks)
 
 # ── per-file pipeline ──────────────────────────────────────────────
 process_file(tif_path, out_dir, model, args) -> dict   # log row
