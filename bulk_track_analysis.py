@@ -444,6 +444,61 @@ def _plot_speed_hist(track_props: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def _top_n_track_ids(tracked_df: pd.DataFrame, max_tracks: int) -> list[int]:
+    """Return up to max_tracks particle IDs with the longest tracks."""
+    if "particle" not in tracked_df.columns or len(tracked_df) == 0:
+        return []
+    counts = tracked_df.groupby("particle").size().sort_values(ascending=False)
+    return counts.head(max_tracks).index.tolist()
+
+
+def _plot_length_per_track(
+    tracked_df: pd.DataFrame, out_path: Path, max_tracks: int,
+) -> None:
+    """One line per track: cumulative displacement vs frame."""
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ids = _top_n_track_ids(tracked_df, max_tracks)
+    for tid in ids:
+        grp = tracked_df[tracked_df["particle"] == tid].sort_values("frame")
+        if len(grp) < 2:
+            continue
+        coords = grp[["y", "x"]].to_numpy()
+        steps = np.linalg.norm(np.diff(coords, axis=0), axis=1)
+        cum = np.concatenate([[0.0], np.cumsum(steps)])
+        ax.plot(grp["frame"].to_numpy(), cum, alpha=0.5, linewidth=0.7)
+    ax.set_xlabel("Frame")
+    ax.set_ylabel("Cumulative displacement (px)")
+    ax.set_title(f"Per-track cumulative displacement (top {len(ids)})")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def _plot_speed_per_track(
+    tracked_df: pd.DataFrame, out_path: Path, max_tracks: int,
+) -> None:
+    """One line per track: frame-to-frame speed vs frame.
+
+    Speed at frame f is the distance from the previous frame to frame f
+    (so the first frame of every track has no value and is skipped).
+    """
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ids = _top_n_track_ids(tracked_df, max_tracks)
+    for tid in ids:
+        grp = tracked_df[tracked_df["particle"] == tid].sort_values("frame")
+        if len(grp) < 2:
+            continue
+        coords = grp[["y", "x"]].to_numpy()
+        steps = np.linalg.norm(np.diff(coords, axis=0), axis=1)
+        ax.plot(grp["frame"].to_numpy()[1:], steps, alpha=0.5, linewidth=0.7)
+    ax.set_xlabel("Frame")
+    ax.set_ylabel("Instantaneous speed (px / frame)")
+    ax.set_title(f"Per-track speed (top {len(ids)})")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 # ── per-file pipeline ───────────────────────────────────────────────
 
 
