@@ -50,7 +50,6 @@ python bulk_track_analysis.py <input_dir> <output_dir> [options]
 | `--min-track-length` | `2` | Minimum track length included in plots (CSV is unfiltered). |
 | `--max-tracks-plot` | `200` | Cap on the number of tracks drawn in the per-track plots (`length_per_track.png`, `speed_per_track.png`). Tracks are sorted by length descending; only the top N are plotted. Has no effect on histograms or CSVs. |
 | `--skip-existing` | off | Skip an input if its output sub-folder already exists. |
-| `--verbose` | off | Print per-stage progress to stderr. |
 
 ## Pipeline (per input file)
 
@@ -166,16 +165,23 @@ Functions are copied (not imported) per the user's preference — the script
 is intended to be standalone and shippable without depending on the napari
 plugin package being installed.
 
-`print` to stderr (gated by `--verbose`) is the only logging mechanism;
-no `logging` module configuration. The structured `run.log` file is
-written line-by-line as files complete.
+**Progress reporting** uses `tqdm` for every loop the user might wait on:
+- Outer loop over input TIFFs (one bar across the whole run).
+- Inner loop over frames during Spotiflow inference, per file (nested bar
+  with `leave=False` so it disappears when each file finishes).
+
+Non-loop status messages (`Loading Spotiflow model...`,
+`WARN: skipping <stem>.tif (2D)`, `FAIL: <stem>.tif — see run.log`) print
+to `sys.stderr` unconditionally — they're sparse and useful. No
+`logging` module configuration. The structured `run.log` file is written
+line-by-line as files complete.
 
 ## Dependencies
 
 Already in the project's `.venv`:
 `numpy`, `scipy`, `pandas`, `tifffile`, `trackpy`, `spotiflow`, `torch`,
-`torchimize`, `matplotlib`, `tqdm` (optional; `tqdm` used only when
-`--verbose`).
+`torchimize`, `matplotlib`, `tqdm` (required — used for all loop progress
+reporting).
 
 ## Out of scope
 
