@@ -668,9 +668,62 @@ def parse_args(argv=None) -> Args:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    print(f"Input:  {args.input_dir}", file=sys.stderr)
-    print(f"Output: {args.output_dir}", file=sys.stderr)
-    return 0
+
+    if not args.input_dir.is_dir():
+        print(f"ERROR: input_dir is not a directory: {args.input_dir}",
+              file=sys.stderr)
+        return 2
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    inputs = sorted(
+        list(args.input_dir.glob("*.tif")) + list(args.input_dir.glob("*.tiff"))
+    )
+    if not inputs:
+        print(f"ERROR: no .tif/.tiff files found in {args.input_dir}",
+              file=sys.stderr)
+        return 2
+
+    device = _select_device(args.device)
+    if device != args.device:
+        print(f"WARN: requested device={args.device}, falling back to {device}",
+              file=sys.stderr)
+
+    print(f"Loading Spotiflow 'general' on {device}...", file=sys.stderr)
+    model = _load_spotiflow("general", device=device)
+
+    log_path = args.output_dir / "run.log"
+    n_ok = n_fail = n_skip = 0
+    with log_path.open("a", encoding="utf-8") as log_f:
+        for tif in tqdm(inputs, desc="files", unit="file"):
+            try:
+                row = process_file(tif, args.output_dir, model, args)
+            except Exception:
+                tb = traceback.format_exc()
+                row = {"stem": tif.stem, "n_spots": 0, "n_tracks": 0,
+                       "status": "FAIL", "error": tb.replace("\n", " | ")}
+                print(f"FAIL: {tif.name} — see run.log", file=sys.stderr)
+
+            log_line = (
+                f"{row['stem']}\tn_spots={row['n_spots']}"
+                f"\tn_tracks={row['n_tracks']}"
+                f"\tstatus={row['status']}\t{row['error']}\n"
+            )
+            log_f.write(log_line)
+            log_f.flush()
+
+            if row["status"] == "OK":
+                n_ok += 1
+            elif row["status"] == "SKIP":
+                n_skip += 1
+            else:
+                n_fail += 1
+
+    print(
+        f"Done: {n_ok} OK, {n_skip} skipped, {n_fail} failed. "
+        f"Log: {log_path}",
+        file=sys.stderr,
+    )
+    return 0 if n_fail == 0 else 1
 
 
 if __name__ == "__main__":
