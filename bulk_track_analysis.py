@@ -502,6 +502,94 @@ def _plot_speed_per_track(
 # ── per-file pipeline ───────────────────────────────────────────────
 
 
+def process_file(tif_path: Path, out_dir: Path, model, args: Args) -> dict:
+    """Run preprocess → segment → fit → mask → track → analyze → write.
+
+    Returns a log row: {stem, n_spots, n_tracks, status, error}.
+    """
+    stem = tif_path.stem
+    file_out = out_dir / stem
+
+    if args.skip_existing and file_out.exists():
+        return {"stem": stem, "n_spots": 0, "n_tracks": 0,
+                "status": "SKIP", "error": "output exists"}
+
+    file_out.mkdir(parents=True, exist_ok=True)
+
+    stack = tifffile.imread(str(tif_path))
+    if stack.ndim != 3:
+        return {"stem": stem, "n_spots": 0, "n_tracks": 0,
+                "status": "SKIP", "error": f"ndim={stack.ndim} (expected 3)"}
+
+    # ── Preprocess ───────────────────────────────────────────────
+    pre = stack
+    if not args.no_walk:
+        pre = _walking_average(pre, window=args.walk_window)
+    if not args.no_blur:
+        pre = _gaussian_blur_stack(pre, sigma=args.gauss_sigma)
+    if not args.no_submean:
+        pre = _subtract_stack_mean(pre)
+
+    # ── Segment ──────────────────────────────────────────────────
+    spots = _detect_all_frames(
+        pre, model, prob_thresh=args.prob_thresh, min_distance=args.min_distance,
+    )
+    if len(spots) == 0:
+        # Empty mask, empty CSVs, no plots.
+        empty_mask = np.zeros(pre.shape, dtype=np.int32)
+        tifffile.imwrite(str(file_out / "mask.tif"), empty_mask, bigtiff=True)
+        empty_cols_spots = ["frame", "y", "x", "amp", "x_fit", "y_fit",
+                            "sigma_x", "sigma_y", "bg",
+                            "area", "mean_intensity", "max_intensity", "spot_radius"]
+        pd.DataFrame(columns=empty_cols_spots).to_csv(file_out / "spots.csv", index=False)
+        pd.DataFrame(columns=empty_cols_spots + ["particle"]).to_csv(file_out / "tracks.csv", index=False)
+        pd.DataFrame(columns=["track_id", "length", "total_displacement",
+                              "net_displacement", "mean_speed",
+                              "mean_intensity", "max_intensity", "intensity_std"]
+                     ).to_csv(file_out / "track_analysis.csv", index=False)
+        return {"stem": stem, "n_spots": 0, "n_tracks": 0,
+                "status": "OK", "error": ""}
+
+    # ── Fit + mask ───────────────────────────────────────────────
+    fitted = _fit_all_frames_gpu(pre, spots, win=args.fit_win, device=args.device)
+    mask, props = _make_gpu_spot_mask(
+        pre.shape, fitted, intensity_stack=pre, max_radius=args.max_radius,
+    )
+
+    # spots.csv columns: rename `time` → `frame`
+    spots_out = props.rename(columns={"time": "frame"})
+    spots_out.to_csv(file_out / "spots.csv", index=False)
+    tifffile.imwrite(str(file_out / "mask.tif"), mask, bigtiff=True)
+
+    # ── Track ────────────────────────────────────────────────────
+    tracker_in = spots_out[["frame", "y", "x"]].copy()
+    tracked = _track_blobs(tracker_in, args.search_range, args.memory)
+    # Re-attach the fit/intensity columns for downstream consumers.
+    tracked = tracked.merge(
+        spots_out.drop(columns=["frame", "y", "x"], errors="ignore"),
+        left_index=True, right_index=True, how="left",
+    )
+    tracked.to_csv(file_out / "tracks.csv", index=False)
+
+    # ── Analyze ──────────────────────────────────────────────────
+    track_props = _compute_track_properties(tracked, image=pre)
+    track_props.to_csv(file_out / "track_analysis.csv", index=False)
+
+    # ── Plots (filter applies to plots only) ─────────────────────
+    plot_props = track_props[track_props["length"] >= args.min_track_length]
+    plot_tracked = tracked[tracked["particle"].isin(plot_props["track_id"])]
+    _plot_length_hist(plot_props, file_out / "length_hist.png")
+    _plot_speed_hist(plot_props, file_out / "speed_hist.png")
+    _plot_length_per_track(plot_tracked, file_out / "length_per_track.png",
+                           args.max_tracks_plot)
+    _plot_speed_per_track(plot_tracked, file_out / "speed_per_track.png",
+                          args.max_tracks_plot)
+
+    return {"stem": stem, "n_spots": int(len(spots_out)),
+            "n_tracks": int(track_props["track_id"].nunique()),
+            "status": "OK", "error": ""}
+
+
 # ── CLI ─────────────────────────────────────────────────────────────
 
 
