@@ -78,6 +78,25 @@ def _gaussian_blur_stack(image_stack: np.ndarray, sigma: float) -> np.ndarray:
     return blurred.astype(image_stack.dtype)
 
 
+def _subtract_stack_mean(image_stack: np.ndarray) -> np.ndarray:
+    """Subtract the mean projection along T from every frame.
+
+    Computes mean in float64. For integer dtypes, clips to the dtype range
+    before casting back (so unsigned negatives clamp to 0 instead of
+    wrapping). For float dtypes, casts directly.
+    """
+    if image_stack.ndim != 3:
+        raise ValueError(f"Expected 3D (T,Y,X) stack, got {image_stack.ndim}D")
+
+    mean_proj = image_stack.mean(axis=0)  # 2D Y,X (float64)
+    diff = image_stack.astype(np.float64) - mean_proj  # broadcasts over T
+
+    if np.issubdtype(image_stack.dtype, np.integer):
+        info = np.iinfo(image_stack.dtype)
+        diff = np.clip(diff, info.min, info.max)
+    return diff.astype(image_stack.dtype)
+
+
 # ── segmentation ────────────────────────────────────────────────────
 
 
