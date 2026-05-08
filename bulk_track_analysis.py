@@ -64,6 +64,20 @@ def _walking_average(image_stack: np.ndarray, window: int = 3) -> np.ndarray:
     return result.astype(image_stack.dtype)
 
 
+def _gaussian_blur_stack(image_stack: np.ndarray, sigma: float) -> np.ndarray:
+    """Per-frame Gaussian blur on a (T,Y,X) stack.
+
+    Applies the 2D filter only on Y/X (sigma=0 along T) so frames are
+    smoothed independently. Returns the same dtype as the input.
+    """
+    if image_stack.ndim != 3:
+        raise ValueError(f"Expected 3D (T,Y,X) stack, got {image_stack.ndim}D")
+    if sigma <= 0:
+        return image_stack
+    blurred = gaussian_filter(image_stack.astype(np.float64), sigma=(0, sigma, sigma))
+    return blurred.astype(image_stack.dtype)
+
+
 # ── segmentation ────────────────────────────────────────────────────
 
 
