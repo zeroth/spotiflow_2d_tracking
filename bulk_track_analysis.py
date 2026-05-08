@@ -257,6 +257,94 @@ def _fit_all_frames_gpu(
     )
 
 
+def _make_gpu_spot_mask(
+    stack_shape,
+    df: pd.DataFrame,
+    intensity_stack: np.ndarray | None = None,
+    dtype=np.int32,
+    min_radius: float = 1.0,
+    max_radius: float | None = None,
+    label_col: str | None = None,
+):
+    """Build a (T,Y,X) stack of per-frame 2D labels from fitted sigmas.
+
+    When `intensity_stack` is given, also computes per-spot area,
+    mean_intensity, max_intensity, spot_radius.
+    """
+    T, H, W = stack_shape
+    n_total = len(df)
+
+    valid = df[["x", "y", "sigma_x", "sigma_y", "time"]].notna().all(axis=1)
+    sub = df.loc[valid]
+
+    area_out = np.full(n_total, np.nan, dtype=np.float64)
+    mean_out = np.full(n_total, np.nan, dtype=np.float64)
+    max_out = np.full(n_total, np.nan, dtype=np.float64)
+    radii_out = np.full(n_total, np.nan, dtype=np.float64)
+
+    if len(sub) == 0:
+        return np.zeros(stack_shape, dtype=dtype), df.assign(
+            area=area_out, mean_intensity=mean_out,
+            max_intensity=max_out, spot_radius=radii_out,
+        )
+
+    cx = sub["x"].to_numpy()
+    cy = sub["y"].to_numpy()
+    ct = sub["time"].to_numpy().astype(np.int64)
+    sx = sub["sigma_x"].to_numpy()
+    sy = sub["sigma_y"].to_numpy()
+    valid_idx = np.where(valid)[0]
+
+    if label_col is not None:
+        labels = sub[label_col].to_numpy().astype(dtype)
+    else:
+        labels = np.arange(1, len(sub) + 1, dtype=dtype)
+
+    radii = np.sqrt(2.0) * 0.5 * (sx + sy)
+    radii = np.clip(radii, min_radius, max_radius if max_radius else np.inf)
+    radii_out[valid_idx] = radii
+
+    mask = np.zeros((T, H, W), dtype=dtype)
+    r_int = np.ceil(radii).astype(np.int32)
+
+    for r in np.unique(r_int):
+        sel = np.where(r_int == r)[0]
+        size = 2 * r + 1
+        yy, xx = np.ogrid[-r:r + 1, -r:r + 1]
+
+        for i in sel:
+            t = ct[i]
+            xi = int(round(cx[i])) - r
+            yi = int(round(cy[i])) - r
+            dx = cx[i] - round(cx[i])
+            dy = cy[i] - round(cy[i])
+            disk = (xx - dx) ** 2 + (yy - dy) ** 2 <= radii[i] ** 2
+
+            x_start = max(0, xi); x_end = min(W, xi + size)
+            y_start = max(0, yi); y_end = min(H, yi + size)
+            dx_start = x_start - xi; dx_end = dx_start + (x_end - x_start)
+            dy_start = y_start - yi; dy_end = dy_start + (y_end - y_start)
+            if x_end <= x_start or y_end <= y_start:
+                continue
+
+            local_disk = disk[dy_start:dy_end, dx_start:dx_end]
+            target = mask[t, y_start:y_end, x_start:x_end]
+            np.copyto(target, labels[i], where=local_disk & (target == 0))
+
+            i_global = valid_idx[i]
+            area_out[i_global] = int(local_disk.sum())
+            if intensity_stack is not None and local_disk.any():
+                disk_pixels = intensity_stack[t, y_start:y_end, x_start:x_end][local_disk]
+                mean_out[i_global] = disk_pixels.mean()
+                max_out[i_global] = disk_pixels.max()
+
+    df_out = df.assign(
+        area=area_out, mean_intensity=mean_out,
+        max_intensity=max_out, spot_radius=radii_out,
+    )
+    return mask, df_out
+
+
 # ── tracking + analysis ─────────────────────────────────────────────
 
 
