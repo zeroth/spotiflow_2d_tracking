@@ -370,3 +370,115 @@ class TestTrackingAnalysisTab:
         # Both charts should have axes drawn
         assert len(widget._length_fig.axes) == 1
         assert len(widget._speed_fig.axes) == 1
+
+
+class TestPerTrackAnalysis:
+    def _add_synthetic_tracks(self, viewer):
+        # Two tracks: a long one (8 frames, moving 1 px/frame) and a short
+        # one (3 frames). Image is constant so intensity is uniform.
+        data = np.array([
+            # particle 1, 8 frames
+            [0, 0.0, 0.0],
+            [1, 0.0, 1.0],
+            [2, 0.0, 2.0],
+            [3, 0.0, 3.0],
+            [4, 0.0, 4.0],
+            [5, 0.0, 5.0],
+            [6, 0.0, 6.0],
+            [7, 0.0, 7.0],
+            # particle 2, 3 frames
+            [0, 10.0, 10.0],
+            [1, 10.0, 10.0],
+            [2, 10.0, 10.0],
+        ])
+        viewer.add_points(data, name="spots")
+        image = np.full((8, 32, 32), 100.0)
+        viewer.add_image(image, name="img")
+
+    def _get_track_ids_by_length(self, viewer):
+        """Return (long_id, short_id) sorted by vertex count descending."""
+        layer = viewer.layers["Tracked Spots"]
+        tracked_df = layer.metadata["tracked_df"]
+        lengths = tracked_df.groupby("particle").size().sort_values(ascending=False)
+        ids = lengths.index.tolist()
+        return ids[0], ids[-1]  # (longest, shortest)
+
+    def test_track_selection_redraws_charts_with_intensity(self, tracking_widget):
+        widget, viewer = tracking_widget
+        self._add_synthetic_tracks(viewer)
+        widget._points_combo.setCurrentText("spots")
+        widget._image_combo.setCurrentText("img")
+        widget._search_range.setValue(5.0)
+        widget._memory.setValue(0)
+        widget._track_btn.click()
+
+        long_id, _ = self._get_track_ids_by_length(viewer)
+        widget._on_track_selected(long_id)
+
+        # MSD chart has axes drawn (length > 5)
+        assert len(widget._msd_fig.axes) == 1
+        # Step chart has axes drawn (intensity available)
+        assert len(widget._step_fig.axes) == 1
+        # Intensity chart drawn
+        assert len(widget._intensity_fig.axes) == 1
+        # Status reflects vertex count (8 for the long track)
+        assert "8 vertices" in widget._per_track_status.text()
+
+    def test_short_track_msd_shows_placeholder(self, tracking_widget):
+        widget, viewer = tracking_widget
+        self._add_synthetic_tracks(viewer)
+        widget._points_combo.setCurrentText("spots")
+        widget._image_combo.setCurrentText("img")
+        widget._search_range.setValue(5.0)
+        widget._memory.setValue(0)
+        widget._track_btn.click()
+
+        _, short_id = self._get_track_ids_by_length(viewer)
+        widget._on_track_selected(short_id)  # short track (3 frames)
+
+        ax = widget._msd_fig.axes[0]
+        # Look for the placeholder text
+        texts = [t.get_text() for t in ax.texts]
+        assert any("too short" in s for s in texts)
+
+    def test_step_param_change_redraws_step_chart(self, tracking_widget):
+        widget, viewer = tracking_widget
+        self._add_synthetic_tracks(viewer)
+        widget._points_combo.setCurrentText("spots")
+        widget._image_combo.setCurrentText("img")
+        widget._search_range.setValue(5.0)
+        widget._memory.setValue(0)
+        widget._track_btn.click()
+
+        long_id, _ = self._get_track_ids_by_length(viewer)
+        widget._on_track_selected(long_id)
+        # Change a knob; the step chart should redraw without error
+        widget._step_window.setValue(10)
+        widget._step_threshold.setValue(0.7)
+        # Trigger handler explicitly in case tests don't fire signal eagerly
+        widget._on_step_params_changed()
+        assert len(widget._step_fig.axes) == 1
+
+    def test_no_image_skips_intensity_chart(self, tracking_widget):
+        widget, viewer = tracking_widget
+        # Add tracks WITHOUT an image layer
+        data = np.array([
+            [0, 0.0, 0.0], [1, 0.0, 1.0], [2, 0.0, 2.0], [3, 0.0, 3.0],
+            [4, 0.0, 4.0], [5, 0.0, 5.0], [6, 0.0, 6.0],
+        ])
+        viewer.add_points(data, name="spots")
+        widget._points_combo.setCurrentText("spots")
+        # Leave _image_combo blank
+        widget._search_range.setValue(5.0)
+        widget._memory.setValue(0)
+        widget._track_btn.click()
+
+        # Look up the actual particle ID rather than assuming it's 1
+        layer = viewer.layers["Tracked Spots"]
+        tracked_df = layer.metadata["tracked_df"]
+        any_id = int(tracked_df["particle"].iloc[0])
+        widget._on_track_selected(any_id)
+
+        ax = widget._intensity_fig.axes[0]
+        texts = [t.get_text() for t in ax.texts]
+        assert any("No intensity data" in s for s in texts)

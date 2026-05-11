@@ -140,3 +140,47 @@ class TestWithImage:
         df = _track_df([[0, 0.0, 0.0, 0]])
         with pytest.raises(ValueError, match="2D.*3D"):
             compute_track_properties(df, image=image)
+
+
+class TestMsd:
+    def test_msd_basic_two_lag_times(self):
+        from napari_spotiflow_tracking._track_properties import msd
+        # Track moving 1 px in x per frame, no y motion → at lag t, MSD = t²
+        pos = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
+        out = msd(pos, limit=25)
+        # lag 1 → mean of (1, 1, 1) squared in x and 0² in y → 1
+        # lag 2 → mean of (2, 2)²,0² → 4
+        # lag 3 → 3² = 9
+        assert out.iloc[0] == pytest.approx(1.0)
+        assert out.iloc[1] == pytest.approx(4.0)
+        assert out.iloc[2] == pytest.approx(9.0)
+
+    def test_msd_limit_clipped_to_n_minus_1(self):
+        from napari_spotiflow_tracking._track_properties import msd
+        pos = np.array([[0.0, 0.0], [1.0, 0.0]])
+        out = msd(pos, limit=25)
+        assert len(out) == 1
+
+
+class TestFindSteps:
+    def test_find_steps_no_steps_constant_data(self):
+        from napari_spotiflow_tracking._track_properties import find_steps
+        data = np.full(50, 100.0)
+        table, fitx, _ = find_steps(data, window=5, threshold=0.5)
+        # No steps detected on flat data
+        assert len(table) == 0
+        # Fitx falls back to the mean
+        assert np.allclose(fitx, 100.0)
+
+    def test_find_steps_detects_obvious_step(self):
+        from napari_spotiflow_tracking._track_properties import find_steps
+        # Step at frame 25 from level 10 to level 100
+        data = np.concatenate([np.full(25, 10.0), np.full(25, 100.0)])
+        table, fitx, _ = find_steps(data, window=5, threshold=0.3)
+        assert len(table) >= 1
+        # fitx should be piecewise-constant with two levels near 10 and 100.
+        # Allow tolerance because the detected step index may be 1-2 frames
+        # off from the true transition, causing level_before/after means to
+        # include a small number of samples from the wrong side.
+        assert fitx[5] == pytest.approx(10.0, abs=1.0)
+        assert fitx[48] == pytest.approx(100.0, abs=5.0)
