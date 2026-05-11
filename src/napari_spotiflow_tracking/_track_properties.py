@@ -112,6 +112,57 @@ def msd(pos: np.ndarray, limit: int = 25) -> pd.Series:
     return result["msd"]
 
 
+def msd_basic_fit(
+    msd_series: pd.Series,
+    delta: float = 1.0,
+    maxfev: int = 1_000_000,
+) -> dict:
+    """Fit the anomalous-diffusion model ``msd = 4 * D * t^alpha`` to an MSD curve.
+
+    Parameters
+    ----------
+    msd_series : pd.Series
+        Output of :func:`msd` — indexed by integer lag time (in frames).
+    delta : float
+        Real-world time per frame (e.g. seconds). Default 1.0 keeps lag in
+        frames so D has units of px²/frame^alpha and alpha is unitless.
+    maxfev : int
+        Maximum function evaluations for ``scipy.optimize.curve_fit``.
+
+    Returns
+    -------
+    dict with keys:
+      - ``"x"`` : lag-time array used for the fit (same length as input).
+      - ``"y_fit"`` : fitted MSD values at those lag times.
+      - ``"diffusion_coefficient"`` (float, D).
+      - ``"alpha"`` (float, anomalous diffusion exponent).
+
+    Adapted from napari-particle-tracking/.../libs/_tracking.py::basic_msd_fit.
+    """
+    from scipy.optimize import curve_fit
+
+    y = np.asarray(msd_series, dtype=float)
+    if y.size < 2 or not np.all(np.isfinite(y)):
+        raise ValueError("Need at least 2 finite MSD values to fit")
+
+    x = np.arange(1, len(y) + 1, dtype=float) * float(delta)
+
+    def _fit_function(t, d, alfa):
+        return (4.0 * d) * np.power(t, alfa)
+
+    best_value, _ = curve_fit(
+        _fit_function, x, y, p0=np.array([0.001, 0.01]), maxfev=maxfev,
+    )
+    d, alpha = float(best_value[0]), float(best_value[1])
+    y_fit = _fit_function(x, d, alpha)
+    return {
+        "x": x,
+        "y_fit": y_fit,
+        "diffusion_coefficient": d,
+        "alpha": alpha,
+    }
+
+
 def find_steps(
     data: np.ndarray,
     window: int = 20,

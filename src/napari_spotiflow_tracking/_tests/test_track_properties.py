@@ -162,6 +162,35 @@ class TestMsd:
         assert len(out) == 1
 
 
+class TestMsdBasicFit:
+    def test_fit_recovers_alpha_two_for_ballistic_motion(self):
+        from napari_spotiflow_tracking._track_properties import (
+            msd as _msd,
+            msd_basic_fit,
+        )
+        # 1 px/frame ballistic motion → MSD = t² → α=2 in 4·D·t^α.
+        pos = np.array([[float(i), 0.0] for i in range(10)])
+        series = _msd(pos, limit=9)
+        fit = msd_basic_fit(series, delta=1.0)
+        assert fit["alpha"] == pytest.approx(2.0, abs=0.05)
+        assert fit["diffusion_coefficient"] > 0
+        assert np.allclose(fit["y_fit"], series.to_numpy(), rtol=1e-2)
+
+    def test_fit_returns_required_keys(self):
+        from napari_spotiflow_tracking._track_properties import (
+            msd as _msd,
+            msd_basic_fit,
+        )
+        pos = np.array([[float(i), float(i)] for i in range(8)])
+        series = _msd(pos, limit=7)
+        fit = msd_basic_fit(series, delta=1.0)
+        assert set(fit.keys()) == {
+            "x", "y_fit", "diffusion_coefficient", "alpha",
+        }
+        assert len(fit["x"]) == len(series)
+        assert len(fit["y_fit"]) == len(series)
+
+
 class TestFindSteps:
     def test_find_steps_no_steps_constant_data(self):
         from napari_spotiflow_tracking._track_properties import find_steps

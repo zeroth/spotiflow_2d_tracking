@@ -353,7 +353,10 @@ class TrackingWidget(QWidget):
         self._redraw_intensity_chart(intensity)
 
     def _redraw_msd_chart(self, coords_xy):
-        from napari_spotiflow_tracking._track_properties import msd as _msd
+        from napari_spotiflow_tracking._track_properties import (
+            msd as _msd,
+            msd_basic_fit,
+        )
 
         fig = self._msd_fig
         fig.clear()
@@ -379,8 +382,27 @@ class TrackingWidget(QWidget):
             style_figure(fig)
             self._msd_canvas.draw_idle()
             return
-        ax.plot(series.index.to_numpy(), series.to_numpy(),
-                color="#7fcf9f", marker="o", linewidth=1.5)
+        ax.plot(
+            series.index.to_numpy(), series.to_numpy(),
+            color="#7fcf9f", marker="o", linewidth=1.5,
+            label="MSD",
+        )
+        # Anomalous-diffusion fit: msd = 4 * D * t^alpha
+        try:
+            fit = msd_basic_fit(series, delta=1.0)
+            ax.plot(
+                fit["x"], fit["y_fit"],
+                color="#cf7f7f", linewidth=2.0, linestyle="--",
+                label=(
+                    f"fit: D={fit['diffusion_coefficient']:.3g}, "
+                    f"α={fit['alpha']:.3g}"
+                ),
+            )
+        except Exception:
+            # Fit may diverge on very short or pathological MSD curves —
+            # just show the raw data in that case.
+            pass
+        ax.legend(loc="upper left", fontsize=8)
         style_figure(fig)
         self._msd_canvas.draw_idle()
 
