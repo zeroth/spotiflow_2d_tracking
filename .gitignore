@@ -18,3 +18,12 @@ htmlcov/
 
 .vscode/
 .idea/
+
+# claude
+.claude/
+docs/
+CLAUDE.md
+
+# local non tracked
+remove_me/
+scripts/
