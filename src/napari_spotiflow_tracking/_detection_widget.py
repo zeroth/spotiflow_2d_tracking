@@ -146,9 +146,10 @@ class DetectionWidget(QWidget):
         row_dist.addWidget(self._min_distance)
         spoti_layout.addLayout(row_dist)
 
-        # GPU fit window size — half-window radius for the Gaussian fit;
-        # also used as the max_radius for the spot mask. Only relevant when
-        # the GPU fit + mask path is active.
+        # GPU fit window size — half-window for the Gaussian fit; the fit
+        # uses a (2·win+1)² patch. The spot-mask max radius is derived as
+        # 2·win (≈ 2σ coverage). Only relevant when the GPU fit + mask
+        # path is active.
         row_win = QHBoxLayout()
         self._fit_window_label = QLabel("Fit window size:")
         row_win.addWidget(self._fit_window_label)
@@ -156,8 +157,8 @@ class DetectionWidget(QWidget):
         self._fit_window.setRange(1, 20)
         self._fit_window.setValue(2)
         self._fit_window.setToolTip(
-            "Half-window radius for GPU Gaussian fit (also used as the "
-            "maximum spot radius for the generated mask)."
+            "Half-window for the GPU Gaussian fit — fit patch is "
+            "(2·win+1)². Mask max radius is derived as 2·win."
         )
         row_win.addWidget(self._fit_window)
         spoti_layout.addLayout(row_win)
@@ -609,9 +610,13 @@ class DetectionWidget(QWidget):
                     None,
                 )
                 win = int(self._fit_window.value())
+                # win is a half-window (patch = (2·win+1)²). The fit allows
+                # σ up to ~win, and make_gpu_spot_mask computes
+                # radius ≈ σ·√2, so cap radius at 2·win to cover ~2σ
+                # without truncating legitimately-fit spots.
                 self._gpu_fit_worker = GpuFitMaskWorker(
                     image=src_image, points=points,
-                    win=win, max_radius=float(win),
+                    win=win, max_radius=float(win * 2),
                 )
                 self._gpu_fit_worker.progress.connect(
                     lambda msg: self._status_label.setText(msg)

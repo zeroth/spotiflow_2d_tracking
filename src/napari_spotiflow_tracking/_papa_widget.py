@@ -20,8 +20,10 @@ from napari_spotiflow_tracking._papa_analysis import (
     annotate_with_cycle_group,
     build_cycle_info,
     compute_particles_per_frame,
+    compute_per_cycle_summary,
 )
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -41,6 +43,7 @@ class PAPAWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self._last_per_frame_df = None
+        self._last_per_cycle_df = None
         self._setup_ui()
         self._connect_events()
         self._refresh_points_combo()
@@ -127,11 +130,6 @@ class PAPAWidget(QWidget):
         self._plot_btn.clicked.connect(self._on_plot_clicked)
         layout.addWidget(self._plot_btn)
 
-        self._export_btn = QPushButton("Export CSV")
-        self._export_btn.setEnabled(False)
-        self._export_btn.clicked.connect(self._on_export_clicked)
-        layout.addWidget(self._export_btn)
-
         self._status_label = QLabel("Ready. Set parameters and click Plot.")
         layout.addWidget(self._status_label)
 
@@ -156,6 +154,31 @@ class PAPAWidget(QWidget):
         self._toolbar_ratio = NavigationToolbar(self._canvas_ratio, self)
         inner_layout.addWidget(self._toolbar_ratio)
         inner_layout.addWidget(self._canvas_ratio)
+
+        # Export group: pick which plot data to write out. Lives in the
+        # plots tab so it's visible right after Plot auto-switches here.
+        export_group = QGroupBox("Export plot data")
+        export_layout = QVBoxLayout()
+        export_group.setLayout(export_layout)
+        export_layout.addWidget(QLabel(
+            "Select which plot data to export — one CSV per item is"
+            " written into the chosen folder."
+        ))
+        self._export_per_frame_cb = QCheckBox(
+            "Per-frame counts (combined-cycles plot)"
+        )
+        self._export_per_frame_cb.setChecked(True)
+        export_layout.addWidget(self._export_per_frame_cb)
+        self._export_per_cycle_cb = QCheckBox(
+            "Per-cycle totals & ratios (ratio plot)"
+        )
+        self._export_per_cycle_cb.setChecked(True)
+        export_layout.addWidget(self._export_per_cycle_cb)
+        self._export_btn = QPushButton("Export selected to CSV...")
+        self._export_btn.setEnabled(False)
+        self._export_btn.clicked.connect(self._on_export_clicked)
+        export_layout.addWidget(self._export_btn)
+        inner_layout.addWidget(export_group)
 
         inner_layout.addStretch()
         scroll.setWidget(inner)
@@ -266,12 +289,16 @@ class PAPAWidget(QWidget):
         )
         self._canvas_combined.draw_idle()
 
+        per_cycle = compute_per_cycle_summary(
+            per_frame, cycle_info, label1, label2,
+        )
         self._render_ratio_plot(
-            self._fig_ratio, per_frame, cycle_info, label1, label2,
+            self._fig_ratio, per_cycle, label1, label2,
         )
         self._canvas_ratio.draw_idle()
 
         self._last_per_frame_df = per_frame
+        self._last_per_cycle_df = per_cycle
         self._export_btn.setEnabled(True)
 
         n_cycles = max((c["cycle"] for c in cycle_info), default=0)
@@ -335,39 +362,13 @@ class PAPAWidget(QWidget):
         ax.grid(alpha=0.3)
         self._style_figure(fig)
 
-    def _render_ratio_plot(self, fig, per_frame, cycle_info, label1, label2):
+    def _render_ratio_plot(self, fig, per_cycle, label1, label2):
         fig.clear()
-        cycles = sorted({info["cycle"] for info in cycle_info})
-
-        g1_counts = []
-        g2_counts = []
-        ratios_g1_g2 = []
-        ratios_g2_g1 = []
-
-        for cyc in cycles:
-            g1_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 1]
-            g2_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 2]
-
-            g1_total = 0
-            if g1_info:
-                mask = (
-                    (per_frame["frame"] >= g1_info[0]["start_frame"])
-                    & (per_frame["frame"] <= g1_info[0]["end_frame"])
-                )
-                g1_total = int(per_frame.loc[mask, "n_particles"].sum())
-
-            g2_total = 0
-            if g2_info:
-                mask = (
-                    (per_frame["frame"] >= g2_info[0]["start_frame"])
-                    & (per_frame["frame"] <= g2_info[0]["end_frame"])
-                )
-                g2_total = int(per_frame.loc[mask, "n_particles"].sum())
-
-            g1_counts.append(g1_total)
-            g2_counts.append(g2_total)
-            ratios_g1_g2.append(g1_total / g2_total if g2_total > 0 else np.nan)
-            ratios_g2_g1.append(g2_total / g1_total if g1_total > 0 else np.nan)
+        cycles = per_cycle["cycle"].tolist()
+        g1_counts = per_cycle[f"{label1}_count"].tolist()
+        g2_counts = per_cycle[f"{label2}_count"].tolist()
+        ratios_g1_g2 = per_cycle[f"{label1}_over_{label2}"].tolist()
+        ratios_g2_g1 = per_cycle[f"{label2}_over_{label1}"].tolist()
 
         x = np.arange(len(cycles))
         bar_width = 0.35
@@ -404,19 +405,49 @@ class PAPAWidget(QWidget):
         self._style_figure(fig)
 
     def _on_export_clicked(self):
+        from pathlib import Path
+
+        want_per_frame = self._export_per_frame_cb.isChecked()
+        want_per_cycle = self._export_per_cycle_cb.isChecked()
+        if not (want_per_frame or want_per_cycle):
+            self._set_status_error("No items selected to export.")
+            return
         if self._last_per_frame_df is None or len(self._last_per_frame_df) == 0:
             self._set_status_error("No data to export. Click Plot first.")
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save particles CSV", "", "CSV files (*.csv)",
+
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "Choose output folder for PAPA CSVs",
         )
-        if not path:
+        if not dir_path:
             return
-        try:
-            self._last_per_frame_df.to_csv(path, index=False)
-        except OSError as exc:
-            self._set_status_error(f"Failed to write CSV: {exc}")
-            return
-        msg = f"Exported {len(self._last_per_frame_df)} rows to {path}"
-        self._status_label.setText(msg)
-        show_info(msg)
+        out_dir = Path(dir_path)
+
+        written: list[str] = []
+        errors: list[str] = []
+
+        if want_per_frame:
+            try:
+                path = out_dir / "papa_per_frame.csv"
+                self._last_per_frame_df.to_csv(path, index=False)
+                written.append(path.name)
+            except OSError as exc:
+                errors.append(f"per-frame: {exc}")
+
+        if want_per_cycle:
+            if self._last_per_cycle_df is None or len(self._last_per_cycle_df) == 0:
+                errors.append("per-cycle: no aggregated data (re-run Plot).")
+            else:
+                try:
+                    path = out_dir / "papa_per_cycle.csv"
+                    self._last_per_cycle_df.to_csv(path, index=False)
+                    written.append(path.name)
+                except OSError as exc:
+                    errors.append(f"per-cycle: {exc}")
+
+        if written:
+            msg = f"Wrote {', '.join(written)} to {out_dir}"
+            self._status_label.setText(msg)
+            show_info(msg)
+        if errors:
+            self._set_status_error("Export issues: " + "; ".join(errors))

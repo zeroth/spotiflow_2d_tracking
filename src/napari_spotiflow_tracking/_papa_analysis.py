@@ -117,3 +117,54 @@ def annotate_with_cycle_group(
     out["cycle"] = cycle_col
     out["group"] = group_col
     return out
+
+
+def compute_per_cycle_summary(
+    per_frame: pd.DataFrame,
+    cycle_info: list[dict],
+    label1: str = "G1",
+    label2: str = "G2",
+) -> pd.DataFrame:
+    """Aggregate ``per_frame`` counts to per-cycle totals and ratios.
+
+    Returns a DataFrame with one row per cycle and columns:
+      ``cycle``, ``<label1>_count``, ``<label2>_count``,
+      ``<label1>_over_<label2>``, ``<label2>_over_<label1>``.
+
+    Ratios use NaN when the denominator is zero. This is the data behind the
+    bar/ratio subplots in :class:`PAPAWidget`'s plots tab — exposed here so it
+    can be exported as well as rendered.
+    """
+    cycles = sorted({info["cycle"] for info in cycle_info})
+    rows = []
+    for cyc in cycles:
+        g1_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 1]
+        g2_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 2]
+
+        g1_total = 0
+        if g1_info:
+            mask = (
+                (per_frame["frame"] >= g1_info[0]["start_frame"])
+                & (per_frame["frame"] <= g1_info[0]["end_frame"])
+            )
+            g1_total = int(per_frame.loc[mask, "n_particles"].sum())
+
+        g2_total = 0
+        if g2_info:
+            mask = (
+                (per_frame["frame"] >= g2_info[0]["start_frame"])
+                & (per_frame["frame"] <= g2_info[0]["end_frame"])
+            )
+            g2_total = int(per_frame.loc[mask, "n_particles"].sum())
+
+        rows.append({
+            "cycle": int(cyc),
+            f"{label1}_count": g1_total,
+            f"{label2}_count": g2_total,
+            f"{label1}_over_{label2}":
+                g1_total / g2_total if g2_total > 0 else float("nan"),
+            f"{label2}_over_{label1}":
+                g2_total / g1_total if g1_total > 0 else float("nan"),
+        })
+
+    return pd.DataFrame(rows)

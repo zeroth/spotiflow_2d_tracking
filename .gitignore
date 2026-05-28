@@ -21,9 +21,9 @@ htmlcov/
 
 # claude
 .claude/
-docs/
+/docs/
 CLAUDE.md
 
 # local non tracked
-remove_me/
-scripts/
+/remove_me/
+

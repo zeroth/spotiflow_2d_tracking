@@ -12,6 +12,7 @@ from matplotlib.backends.backend_qtagg import (
 from matplotlib.figure import Figure
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -253,6 +254,35 @@ class TrackingWidget(QWidget):
         self._filter_panel.selectionChanged.connect(
             self._on_track_selected
         )
+
+        # === Bulk export of per-track analysis metrics =============
+        export_group = QGroupBox("Export analysis data")
+        export_layout = QVBoxLayout()
+        export_group.setLayout(export_layout)
+
+        export_layout.addWidget(QLabel(
+            "Select metrics to export — one CSV per metric is written"
+            " into the chosen folder."
+        ))
+
+        self._export_msd_cb = QCheckBox("MSD (per-track curves + fit)")
+        self._export_msd_cb.setChecked(True)
+        export_layout.addWidget(self._export_msd_cb)
+
+        self._export_speed_cb = QCheckBox("Speed (per-track summary)")
+        self._export_speed_cb.setChecked(True)
+        export_layout.addWidget(self._export_speed_cb)
+
+        self._export_steps_cb = QCheckBox("Steps (per-track step detection)")
+        self._export_steps_cb.setChecked(True)
+        export_layout.addWidget(self._export_steps_cb)
+
+        self._export_analysis_btn = QPushButton("Export selected to CSV...")
+        self._export_analysis_btn.clicked.connect(self._export_analysis_csvs)
+        self._export_analysis_btn.setEnabled(False)
+        export_layout.addWidget(self._export_analysis_btn)
+
+        layout.addWidget(export_group)
 
         layout.addStretch()
         self._tabs.addTab(analysis_tab, "Analysis")
@@ -583,6 +613,7 @@ class TrackingWidget(QWidget):
 
         self._last_tracked_df = tracked_df
         self._export_btn.setEnabled(True)
+        self._export_analysis_btn.setEnabled(True)
         msg = f"Found {n_tracks} tracks across {n_frames} frames."
         self._status_label.setText(msg)
         show_info(msg)
@@ -600,3 +631,139 @@ class TrackingWidget(QWidget):
 
         self._last_tracked_df.to_csv(path, index=False)
         show_info(f"Exported {self._last_tracked_df['particle'].nunique()} tracks to {path}")
+
+    def _export_analysis_csvs(self):
+        from pathlib import Path
+        from napari_spotiflow_tracking._track_properties import (
+            compute_track_properties,
+            find_steps,
+            msd as _msd,
+            msd_basic_fit,
+        )
+
+        want_msd = self._export_msd_cb.isChecked()
+        want_speed = self._export_speed_cb.isChecked()
+        want_steps = self._export_steps_cb.isChecked()
+        if not (want_msd or want_speed or want_steps):
+            show_error("No metrics selected to export.")
+            return
+
+        tracked_df = self._last_tracked_df
+        if tracked_df is None or len(tracked_df) == 0:
+            show_error("No tracks available. Run Track first.")
+            return
+
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "Choose output folder for analysis CSVs"
+        )
+        if not dir_path:
+            return
+        out_dir = Path(dir_path)
+
+        written: list[str] = []
+        errors: list[str] = []
+
+        if want_speed:
+            try:
+                props_df = None
+                for l in self.viewer.layers:
+                    if l.name == "Tracked Spots":
+                        cand = l.metadata.get("properties")
+                        if isinstance(cand, pd.DataFrame):
+                            props_df = cand
+                        break
+                if props_df is None:
+                    props_df = compute_track_properties(tracked_df, image=None)
+                path = out_dir / "speed_per_track.csv"
+                props_df.to_csv(path, index=False)
+                written.append(path.name)
+            except Exception as exc:
+                errors.append(f"Speed: {exc}")
+
+        if want_msd:
+            try:
+                rows = []
+                for tid, grp in tracked_df.groupby("particle"):
+                    grp = grp.sort_values("frame")
+                    coords_xy = grp[["x", "y"]].to_numpy(dtype=float)
+                    if coords_xy.shape[0] <= 5:
+                        continue
+                    try:
+                        series = _msd(coords_xy, limit=25)
+                    except Exception:
+                        continue
+                    d_fit = np.nan
+                    alpha_fit = np.nan
+                    try:
+                        fit = msd_basic_fit(series, delta=1.0)
+                        d_fit = fit["diffusion_coefficient"]
+                        alpha_fit = fit["alpha"]
+                    except Exception:
+                        pass
+                    lags = series.index.to_numpy()
+                    vals = series.to_numpy()
+                    for lag, val in zip(lags, vals):
+                        rows.append({
+                            "track_id": int(tid),  # type: ignore[arg-type]
+                            "lag": int(lag),
+                            "msd": float(val),
+                            "D_fit": d_fit,
+                            "alpha_fit": alpha_fit,
+                        })
+                path = out_dir / "msd_per_track.csv"
+                pd.DataFrame(
+                    rows,
+                    columns=["track_id", "lag", "msd", "D_fit", "alpha_fit"],
+                ).to_csv(path, index=False)
+                written.append(path.name)
+            except Exception as exc:
+                errors.append(f"MSD: {exc}")
+
+        if want_steps:
+            if "intensity" not in tracked_df.columns:
+                errors.append(
+                    "Steps: tracked_df has no intensity column — re-run"
+                    " Track with an Image layer selected."
+                )
+            else:
+                try:
+                    window = int(self._step_window.value())
+                    threshold = float(self._step_threshold.value())
+                    rows = []
+                    for tid, grp in tracked_df.groupby("particle"):
+                        grp = grp.sort_values("frame")
+                        intensity = grp["intensity"].to_numpy(dtype=float)
+                        if intensity.size < 3:
+                            continue
+                        try:
+                            table, _, _ = find_steps(
+                                intensity, window=window, threshold=threshold,
+                            )
+                        except Exception:
+                            continue
+                        for step_idx, step in enumerate(table):
+                            rows.append({
+                                "track_id": int(tid),  # type: ignore[arg-type]
+                                "step_index": step_idx,
+                                "frame_in_track": int(step[0]),
+                                "level_before": float(step[1]),
+                                "level_after": float(step[2]),
+                                "step_height": float(step[3]),
+                                "dwell_before": int(step[4]),
+                                "dwell_after": int(step[5]),
+                                "step_error": float(step[6]),
+                            })
+                    path = out_dir / "steps_per_track.csv"
+                    pd.DataFrame(rows, columns=[
+                        "track_id", "step_index", "frame_in_track",
+                        "level_before", "level_after", "step_height",
+                        "dwell_before", "dwell_after", "step_error",
+                    ]).to_csv(path, index=False)
+                    written.append(path.name)
+                except Exception as exc:
+                    errors.append(f"Steps: {exc}")
+
+        if written:
+            show_info(f"Wrote {', '.join(written)} to {out_dir}")
+        if errors:
+            show_error("Export issues: " + "; ".join(errors))
