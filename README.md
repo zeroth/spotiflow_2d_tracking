@@ -111,6 +111,21 @@ Pick an Image layer and apply any combination of crop, arithmetic, background re
 
 For cyclical / alternating experiments: pick the detected Points layer, set the cycle pattern (group sizes and skip frames), label the groups, and **Plot** to see particles-per-frame and per-cycle bar charts. **Export CSV** for the annotated per-frame table.
 
+## Bulk / headless processing
+
+The [`scripts/`](scripts/) directory contains command-line helpers that reuse the plugin's processing functions without the napari UI — handy for batch runs on a server or overnight jobs. They require the plugin installed in the same environment (`pip install -e .`).
+
+```bash
+# Batch: preprocess → detect → fit → mask → track → analyze every
+# .tif/.tiff stack in a directory, one output sub-folder per file.
+python scripts/bulk_track_analysis.py <input_dir> <output_dir> [options]
+
+# PAPA cycle analysis for a single stack (masks, blob CSV, and graphs).
+python scripts/papa_analysis.py <input.tif> <group1_size> <group2_size> [options]
+```
+
+Pass `--help` to either script for the full list of options.
+
 ## Running tests
 
 ```bash
