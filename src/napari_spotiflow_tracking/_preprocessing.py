@@ -339,6 +339,43 @@ def walking_average(image_stack: np.ndarray, window: int = 3) -> np.ndarray:
     return result.astype(image_stack.dtype)
 
 
+# ── Gaussian blur ─────────────────────────────────────────────────────
+
+
+def gaussian_blur(image: np.ndarray, sigma: float) -> np.ndarray:
+    """Apply a per-frame Gaussian blur.
+
+    For a 2D ``(Y, X)`` image a single Gaussian filter is applied. For a 3D
+    ``(T, Y, X)`` stack each frame is blurred independently (no smoothing
+    across the time axis). The computation is done in float64 and the result
+    is returned as float64.
+
+    Args:
+        image: 2D ``(Y, X)`` image or 3D ``(T, Y, X)`` stack.
+        sigma: standard deviation of the Gaussian kernel, in pixels. A
+            non-positive value returns the input unchanged.
+
+    Returns:
+        Blurred array (float64), or the input unchanged when ``sigma <= 0``.
+
+    Raises:
+        ValueError: if ``image`` is neither 2D nor 3D.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    if sigma <= 0:
+        return image
+    if image.ndim == 2:
+        return gaussian_filter(image.astype(np.float64), sigma=sigma)
+    if image.ndim == 3:
+        frames = [
+            gaussian_filter(image[t].astype(np.float64), sigma=sigma)
+            for t in range(image.shape[0])
+        ]
+        return np.stack(frames, axis=0)
+    raise ValueError(f"Expected 2D (Y,X) or 3D (T,Y,X) image, got {image.ndim}D")
+
+
 # ── Crop via Shapes layer rectangle ──────────────────────────────────
 
 

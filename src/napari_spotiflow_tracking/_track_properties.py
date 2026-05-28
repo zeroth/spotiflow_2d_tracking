@@ -86,8 +86,6 @@ def msd(pos: np.ndarray, limit: int = 25) -> pd.Series:
     -------
     pd.Series indexed by lag time (1..limit), values are MSD per lag.
 
-    Adapted from
-    napari-particle-tracking/src/napari_particle_tracking/libs/_tracking.py.
     """
     if pos.ndim != 2 or pos.shape[1] != 2:
         raise ValueError("pos must have shape (N, 2)")
@@ -137,7 +135,7 @@ def msd_basic_fit(
       - ``"diffusion_coefficient"`` (float, D).
       - ``"alpha"`` (float, anomalous diffusion exponent).
 
-    Adapted from napari-particle-tracking/.../libs/_tracking.py::basic_msd_fit.
+    Adopted from https://github.com/zeroth/cellphy
     """
     from scipy.optimize import curve_fit
 
@@ -177,8 +175,7 @@ def find_steps(
       - ``gaussian_normalise``: the normalized gaussian-filtered derivative
         used for peak detection (useful for diagnostics).
 
-    Adapted from napari-tracking-analysis/src/napari_tracking_analysis/utils/
-    __init__.py::FindSteps.
+    Adopted from https://github.com/zeroth/step_detection
     """
     from math import sqrt
 

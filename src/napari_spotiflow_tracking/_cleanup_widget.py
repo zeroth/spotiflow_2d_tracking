@@ -23,6 +23,7 @@ from napari_spotiflow_tracking._preprocessing import (
     apply_calculation,
     crop_image,
     first_rectangle_bbox,
+    gaussian_blur,
     remove_background_high_pass,
     remove_background_high_pass_stack,
     remove_background_erosion,
@@ -648,22 +649,13 @@ class PreProcessingWidget(QWidget):
         layer_name, image = self._get_image()
         if image is None:
             return
-
-        from scipy.ndimage import gaussian_filter
+        if image.ndim not in (2, 3):
+            show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
+            return
 
         sigma = self._blur_sigma.value()
         show_info(f"Applying Gaussian blur (sigma={sigma})...")
-
-        if image.ndim == 2:
-            result = gaussian_filter(image.astype(np.float64), sigma=sigma)
-        elif image.ndim == 3:
-            frames = []
-            for t in progress(range(image.shape[0]), desc="Gaussian blur"):
-                frames.append(gaussian_filter(image[t].astype(np.float64), sigma=sigma))
-            result = np.stack(frames, axis=0)
-        else:
-            show_error(f"Expected 2D or 3D (T,Y,X) image, got {image.ndim}D.")
-            return
+        result = gaussian_blur(image, sigma)
 
         self.viewer.add_image(result, name=f"{layer_name} (blur s={sigma})")
         show_info("Done — Gaussian blur applied.")

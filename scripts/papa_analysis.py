@@ -1,23 +1,36 @@
 """PAPA microscopy analysis pipeline.
 
 Runs Spotiflow spot detection on every frame of a TIFF stack, saves
-segmentation masks, blob CSV, and a combined particles-per-frame graph
-with cycle/group separators.
+segmentation masks, a blob CSV, and combined particles-per-frame / per-cycle
+ratio graphs with cycle-group separators.
+
+Reuses the napari-spotiflow-tracking plugin's detection and PAPA-analysis
+functions directly (no napari / Qt / UI). Install the plugin into the same
+environment first (e.g. ``pip install -e .``).
 """
 
 import argparse
-import os
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")  # headless plotting — no display needed
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tifffile
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from segment import find_spots_spotiflow, create_spot_mask
+from napari_spotiflow_tracking._papa_analysis import (
+    build_cycle_info,
+    compute_per_cycle_summary,
+)
+from napari_spotiflow_tracking._preprocessing import _get_device
+from napari_spotiflow_tracking._segmentation import (
+    create_spot_mask,
+    detect_spots,
+    load_model,
+)
 
 
 def parse_args():
@@ -44,41 +57,6 @@ def parse_args():
     return p.parse_args()
 
 
-def build_cycle_info(max_time, group1_size, group2_size, skip_frames):
-    """Generate cycle/group boundary information."""
-    cycle_info = []
-    cycle_num = 0
-    current_frame = 1  # 1-indexed
-
-    while current_frame <= max_time:
-        cycle_num += 1
-
-        # Group 1
-        g1_start = current_frame
-        g1_end = min(current_frame + group1_size - 1, max_time)
-        cycle_info.append({
-            "cycle": cycle_num,
-            "group": 1,
-            "start_frame": g1_start,
-            "end_frame": g1_end,
-        })
-        current_frame = g1_end + 1 + skip_frames
-
-        # Group 2
-        if current_frame <= max_time:
-            g2_start = current_frame
-            g2_end = min(current_frame + group2_size - 1, max_time)
-            cycle_info.append({
-                "cycle": cycle_num,
-                "group": 2,
-                "start_frame": g2_start,
-                "end_frame": g2_end,
-            })
-            current_frame = g2_end + 1 + skip_frames
-
-    return cycle_info
-
-
 def make_combined_graph(particles_per_frame, cycle_info, max_time,
                         group1_size, group2_size, skip_frames,
                         label_group1, label_group2, save_path):
@@ -86,7 +64,7 @@ def make_combined_graph(particles_per_frame, cycle_info, max_time,
     sep_colors = ["tab:blue", "tab:orange"]
 
     fig, ax = plt.subplots(figsize=(14, 6))
-    ax.plot(particles_per_frame["time"], particles_per_frame["n_particles"],
+    ax.plot(particles_per_frame["frame"], particles_per_frame["n_particles"],
             color="black", linewidth=1.0)
 
     sep1_labeled = False
@@ -122,37 +100,14 @@ def make_combined_graph(particles_per_frame, cycle_info, max_time,
 def make_ratio_graph(particles_per_frame, cycle_info, label_group1,
                      label_group2, save_path):
     """Create a 2-panel figure: total particle counts per group and G1/G2 ratio per cycle."""
-    cycles = sorted(set(info["cycle"] for info in cycle_info))
-
-    g1_counts = []
-    g2_counts = []
-    ratios_g1_g2 = []
-    ratios_g2_g1 = []
-
-    for cyc in cycles:
-        g1_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 1]
-        g2_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 2]
-
-        g1_total = 0
-        if g1_info:
-            g1_frames = particles_per_frame[
-                (particles_per_frame["time"] >= g1_info[0]["start_frame"]) &
-                (particles_per_frame["time"] <= g1_info[0]["end_frame"])
-            ]
-            g1_total = int(g1_frames["n_particles"].sum())
-
-        g2_total = 0
-        if g2_info:
-            g2_frames = particles_per_frame[
-                (particles_per_frame["time"] >= g2_info[0]["start_frame"]) &
-                (particles_per_frame["time"] <= g2_info[0]["end_frame"])
-            ]
-            g2_total = int(g2_frames["n_particles"].sum())
-
-        g1_counts.append(g1_total)
-        g2_counts.append(g2_total)
-        ratios_g1_g2.append(g1_total / g2_total if g2_total > 0 else np.nan)
-        ratios_g2_g1.append(g2_total / g1_total if g1_total > 0 else np.nan)
+    summary = compute_per_cycle_summary(
+        particles_per_frame, cycle_info, label_group1, label_group2,
+    )
+    cycles = summary["cycle"].tolist()
+    g1_counts = summary[f"{label_group1}_count"].tolist()
+    g2_counts = summary[f"{label_group2}_count"].tolist()
+    ratios_g1_g2 = summary[f"{label_group1}_over_{label_group2}"].tolist()
+    ratios_g2_g1 = summary[f"{label_group2}_over_{label_group1}"].tolist()
 
     x = np.arange(len(cycles))
     bar_width = 0.35
@@ -206,10 +161,10 @@ def main():
     graph_path = f"{stem}_combine_graph.png"
     ratio_path = f"{stem}_ratio.png"
 
-    # Load model
-    from spotiflow.model import Spotiflow
-    print(f"Loading Spotiflow model '{args.spotiflow_model}'...")
-    model = Spotiflow.from_pretrained(args.spotiflow_model, verbose=True)
+    # Load model (GPU when available — mirrors Spotiflow's old auto-device load)
+    device = _get_device(use_gpu=True)
+    print(f"Loading Spotiflow model '{args.spotiflow_model}' on {device}...")
+    model = load_model(args.spotiflow_model, device=device)
     print("Model loaded.")
 
     # Load image stack
@@ -239,7 +194,7 @@ def main():
     # Process each frame
     all_blobs = []
     for i in tqdm(range(n_frames), desc="Segmenting"):
-        points, details = find_spots_spotiflow(
+        points, details = detect_spots(
             image[i], model,
             prob_thresh=args.prob_thresh,
             min_distance=args.min_distance,
@@ -248,10 +203,13 @@ def main():
         masks[i] = mask
 
         if len(points) > 0:
+            # `details` is Spotiflow's predict result; `.intens` exists at
+            # runtime but detect_spots types it loosely as ``object``.
+            intensities = np.asarray(details.intens).ravel()  # type: ignore[attr-defined]
             frame_df = pd.DataFrame({
                 "y": points[:, 0],
                 "x": points[:, 1],
-                "intensity": np.asarray(details.intens).ravel(),
+                "intensity": intensities,
                 "time": i + 1,
             })
             all_blobs.append(frame_df)
@@ -271,12 +229,14 @@ def main():
         df_blobs.to_csv(blob_csv_path, index=False)
         print("No spots detected in any frame.")
 
-    # Particles per frame
+    # Particles per frame — 1-indexed `frame` column, matching the plugin's
+    # PAPA-analysis convention (compute_per_cycle_summary expects `frame`).
     particles_per_frame = (
         df_blobs.groupby("time").size().reset_index(name="n_particles")
+        .rename(columns={"time": "frame"})
     )
 
-    # Build cycle info and save graph
+    # Build cycle info and save graphs
     max_time = n_frames
     cycle_info = build_cycle_info(max_time, args.group1_size, args.group2_size,
                                   args.skip_frames)

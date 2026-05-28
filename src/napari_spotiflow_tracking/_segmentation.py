@@ -75,3 +75,32 @@ def sample_point_intensities(image_2d: np.ndarray, points: np.ndarray) -> np.nda
     ys = np.clip(np.rint(points[:, 0]).astype(int), 0, image_2d.shape[0] - 1)
     xs = np.clip(np.rint(points[:, 1]).astype(int), 0, image_2d.shape[1] - 1)
     return image_2d[ys, xs].astype(float)
+
+
+# ── Fixed-radius point mask ──────────────────────────────────────────
+
+
+def create_spot_mask(image_shape, points: np.ndarray, radius: int = 2) -> np.ndarray:
+    """Paint a fixed-radius filled disk at each detected point.
+
+    A simple, fit-free mask: every spot becomes a disk of the same ``radius``.
+    For fitted, per-spot sized masks see ``_fitting.fit_and_mask_2d`` /
+    ``_fitting.make_gpu_spot_mask``.
+
+    Args:
+        image_shape: shape ``(H, W)`` of the target 2D image.
+        points: ``(N, 2+)`` array; the first two columns are taken as ``(y, x)``.
+        radius: disk radius in pixels.
+
+    Returns:
+        A ``uint8`` mask of ``image_shape`` with 255 inside each disk and 0
+        elsewhere.
+    """
+    from skimage.draw import disk
+
+    mask = np.zeros(image_shape, dtype=np.uint8)
+    for blob in points:
+        y, x = blob[:2]
+        rr, cc = disk((int(y), int(x)), radius, shape=image_shape)
+        mask[rr, cc] = 255
+    return mask
