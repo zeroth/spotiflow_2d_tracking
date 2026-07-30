@@ -76,7 +76,7 @@ pip install -e .
 | Feature | Notes |
 |---|---|
 | Spotiflow GPU inference | Install a CUDA-enabled PyTorch matching your driver (step 2). |
-| GPU Gaussian fit (`gpufit`) | See the [gpufit docs](https://github.com/gpufit/Gpufit); the plugin auto-detects it. |
+| GPU Gaussian fit (`torchimize`) | `pip install torchimize` (with a CUDA-enabled PyTorch); the plugin auto-detects it and uses batched GPU fitting when a CUDA GPU is present. |
 | Noise2Void denoising | Bundled via Spotiflow's dependencies; no extra install required. |
 
 ## Usage

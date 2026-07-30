@@ -60,7 +60,7 @@ Turns each detected point into a per-spot mask with a fitted Gaussian.
 | Field | Notes |
 |---|---|
 | **Generate mask during detection** | Run mask fitting as part of the main *Detect Spots* button. |
-| **Fitting backend** | `scipy` (CPU), `jaxfit` (CPU/GPU via JAX), or `gpufit` (NVIDIA GPU). |
+| **Fitting backend** | `scipy` (CPU, parallel) or `torchimize` (batched GPU via CUDA; listed only when installed). |
 | **Points layer** | Existing Points layer to generate masks from (instead of re-detecting). |
 | **Generate Mask from Points** | Run mask generation on the chosen Points layer. |
 | **Cancel** | Stops the mask worker. |

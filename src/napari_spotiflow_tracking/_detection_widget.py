@@ -234,7 +234,7 @@ class DetectionWidget(QWidget):
         self._backend_combo = QComboBox()
         self._backend_combo.addItems(_available_backends())
         self._backend_combo.setToolTip(
-            "scipy: CPU parallel | jaxfit: GPU via JAX | gpufit: CUDA batched"
+            "scipy: CPU parallel | torchimize: batched GPU (CUDA)"
         )
         backend_row.addWidget(self._backend_combo)
         mask_layout.addLayout(backend_row)
