@@ -24,6 +24,7 @@ from tqdm import tqdm
 from napari_spotiflow_tracking._papa_analysis import (
     build_cycle_info,
     compute_per_cycle_summary,
+    lead_in_span,
 )
 from napari_spotiflow_tracking._preprocessing import _get_device
 from napari_spotiflow_tracking._segmentation import (
@@ -62,8 +63,10 @@ def make_combined_graph(particles_per_frame, cycle_info, max_time,
                         label_group1, label_group2, save_path):
     """Create and save the combined particles-per-frame graph.
 
-    Each group's frame range is shaded as a background band (group 1 blue,
-    group 2 orange); a dotted separator marks each cycle boundary.
+    The excluded lead-in block is shaded grey; each cycle's group ranges are
+    shaded as background bands (group 1 blue, group 2 orange) and a dotted
+    separator marks each cycle boundary. The particle trace covers the whole
+    stack, so lead-in data stays visible even though it belongs to no cycle.
     """
     group_colors = ["tab:blue", "tab:orange"]
     group_labels = [label_group1, label_group2]
@@ -71,6 +74,14 @@ def make_combined_graph(particles_per_frame, cycle_info, max_time,
     fig, ax = plt.subplots(figsize=(14, 6))
     ax.plot(particles_per_frame["frame"], particles_per_frame["n_particles"],
             color="black", linewidth=1.0, zorder=2)
+
+    # Excluded lead-in: readout before the first pulse, in no cycle. Shaded so
+    # it is visibly present but visibly not part of the analysis.
+    lead_in = lead_in_span(max_time, group1_size)
+    if lead_in is not None:
+        ax.axvspan(lead_in[0] - 0.5, lead_in[1] + 0.5, color="gray",
+                   alpha=0.18, linewidth=0, label="lead-in (excluded)",
+                   zorder=0)
 
     # Background band per group. Bands span whole frames, hence the ±0.5.
     labeled = set()
@@ -97,7 +108,8 @@ def make_combined_graph(particles_per_frame, cycle_info, max_time,
 
     ax.set_title(
         f"All Cycles Combined — Particles per Frame  "
-        f"(G1={group1_size}f + skip{skip_frames} + G2={group2_size}f + skip{skip_frames})"
+        f"(lead-in {group1_size}f excluded; cycle = {label_group2} {group2_size}f "
+        f"+ skip{skip_frames} + {label_group1} {group1_size}f + skip{skip_frames})"
     )
     ax.set_xlabel("Time (frame)")
     ax.set_ylabel("Number of Particles")
@@ -121,6 +133,10 @@ def make_ratio_graph(particles_per_frame, cycle_info, label_group1,
     summary = compute_per_cycle_summary(
         particles_per_frame, cycle_info, label_group1, label_group2,
     )
+    if summary.empty:
+        print("No complete cycles in range; skipping ratio graphs.")
+        return
+
     cycles = summary["cycle"].tolist()
     g1_counts = summary[f"{label_group1}_count"].tolist()
     g2_counts = summary[f"{label_group2}_count"].tolist()
@@ -308,13 +324,24 @@ def main():
                      args.label_group1, args.label_group2, ratio_path)
 
     # Print summary
-    n_cycles = max(c["cycle"] for c in cycle_info) if cycle_info else 0
-    print(f"\nTotal cycles: {n_cycles}")
-    print(f"Pattern: G1={args.group1_size}f + skip{args.skip_frames} "
-          f"+ G2={args.group2_size}f + skip{args.skip_frames}")
+    n_cycles = max((c["cycle"] for c in cycle_info), default=0)
+    frames_per_cycle = (
+        args.group1_size + args.skip_frames + args.group2_size
+        + args.skip_frames + args.group1_size
+    )
+    print(f"\nTotal complete cycles: {n_cycles}")
+    print(f"Pattern: lead-in {args.group1_size}f (excluded), then "
+          f"{args.label_group2}={args.group2_size}f + skip{args.skip_frames} "
+          f"+ {args.label_group1}={args.group1_size}f + skip{args.skip_frames}")
+    lead_in = lead_in_span(max_time, args.group1_size)
+    if lead_in is not None:
+        print(f"  Lead-in (excluded): frames {lead_in[0]}-{lead_in[1]}")
     for info in cycle_info:
         print(f"  Cycle {info['cycle']}, Group {info['group']}: "
               f"frames {info['start_frame']}-{info['end_frame']}")
+    if n_cycles == 0:
+        print(f"  No complete cycles fit in {max_time} frames "
+              f"(need at least {frames_per_cycle}).")
 
 
 if __name__ == "__main__":
