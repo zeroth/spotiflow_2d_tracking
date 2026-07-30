@@ -8,6 +8,7 @@ from napari_spotiflow_tracking._papa_analysis import (
     annotate_with_cycle_group,
     build_cycle_info,
     compute_particles_per_frame,
+    lead_in_span,
 )
 
 
@@ -71,52 +72,102 @@ class TestComputeParticlesPerFrame:
 
 
 class TestBuildCycleInfo:
+    # Block walk for g1=5, g2=5, skip=1:
+    #   b0 1-5 (G1, lead-in)   b1 7-11 (G2)   b2 13-17 (G1)
+    #   b3 19-23 (G2)          b4 25-29 (G1)
+    # A cycle is (G2 block, G1 block), so cycle 1 = b1 + b2.
+
     def test_exact_fit_one_cycle(self):
-        # max_time=12, g1=5, g2=5, skip=1: G1 frames 1-5, skip frame 6,
-        # G2 frames 7-11, skip frame 12. One complete cycle.
-        info = build_cycle_info(max_time=12, group1_size=5, group2_size=5, skip_frames=1)
+        # 17 frames is the minimum for one complete cycle: 5 + 1 + 5 + 1 + 5.
+        info = build_cycle_info(max_time=17, group1_size=5, group2_size=5,
+                                skip_frames=1)
         assert info == [
-            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 5},
             {"cycle": 1, "group": 2, "start_frame": 7, "end_frame": 11},
+            {"cycle": 1, "group": 1, "start_frame": 13, "end_frame": 17},
         ]
 
-    def test_partial_g2(self):
-        # max_time=8, g1=5, g2=5, skip=1: G1 1-5, skip 6, G2 7-8 (truncated).
-        info = build_cycle_info(max_time=8, group1_size=5, group2_size=5, skip_frames=1)
-        assert info == [
-            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 5},
-            {"cycle": 1, "group": 2, "start_frame": 7, "end_frame": 8},
-        ]
+    def test_truncated_final_block_dropped(self):
+        # One frame short: b2 would end at 17 but max_time is 16, so cycle 1 is
+        # incomplete and nothing is reported. No group is ever clipped.
+        info = build_cycle_info(max_time=16, group1_size=5, group2_size=5,
+                                skip_frames=1)
+        assert info == []
 
-    def test_no_room_for_g2(self):
-        # max_time=5: only G1.
-        info = build_cycle_info(max_time=5, group1_size=5, group2_size=5, skip_frames=1)
+    def test_trailing_odd_block_dropped(self):
+        # 23 frames fits b0..b3. After the lead-in three blocks remain, so b3
+        # (a G2 block) has no G1 partner and is dropped.
+        info = build_cycle_info(max_time=23, group1_size=5, group2_size=5,
+                                skip_frames=1)
         assert info == [
-            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 5},
+            {"cycle": 1, "group": 2, "start_frame": 7, "end_frame": 11},
+            {"cycle": 1, "group": 1, "start_frame": 13, "end_frame": 17},
         ]
 
     def test_two_full_cycles(self):
-        # max_time=24, g1=5, g2=5, skip=1: cycle 1 G1 1-5, G2 7-11; cycle 2
-        # G1 13-17, G2 19-23.
-        info = build_cycle_info(max_time=24, group1_size=5, group2_size=5, skip_frames=1)
+        # 29 frames fits b0..b4: lead-in plus two complete (G2, G1) pairs.
+        info = build_cycle_info(max_time=29, group1_size=5, group2_size=5,
+                                skip_frames=1)
         assert info == [
-            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 5},
             {"cycle": 1, "group": 2, "start_frame": 7, "end_frame": 11},
-            {"cycle": 2, "group": 1, "start_frame": 13, "end_frame": 17},
+            {"cycle": 1, "group": 1, "start_frame": 13, "end_frame": 17},
             {"cycle": 2, "group": 2, "start_frame": 19, "end_frame": 23},
+            {"cycle": 2, "group": 1, "start_frame": 25, "end_frame": 29},
         ]
 
-    def test_zero_max_time(self):
-        info = build_cycle_info(max_time=0, group1_size=5, group2_size=5, skip_frames=1)
-        assert info == []
+    def test_unequal_group_sizes(self):
+        # g1=200, g2=500, skip=1: lead-in 1-200, G2 202-701, G1 703-902,
+        # then G2 904-1403 with no G1 partner. Sizes are never re-sliced: the
+        # 500-frame block stays 500 frames and stays group 2.
+        info = build_cycle_info(max_time=1403, group1_size=200,
+                                group2_size=500, skip_frames=1)
+        assert info == [
+            {"cycle": 1, "group": 2, "start_frame": 202, "end_frame": 701},
+            {"cycle": 1, "group": 1, "start_frame": 703, "end_frame": 902},
+        ]
 
     def test_skip_zero(self):
-        # No skip: G1 1-3 then G2 4-6.
-        info = build_cycle_info(max_time=6, group1_size=3, group2_size=3, skip_frames=0)
+        # g1=3, g2=3, skip=0: lead-in 1-3, G2 4-6, G1 7-9.
+        info = build_cycle_info(max_time=9, group1_size=3, group2_size=3,
+                                skip_frames=0)
         assert info == [
-            {"cycle": 1, "group": 1, "start_frame": 1, "end_frame": 3},
             {"cycle": 1, "group": 2, "start_frame": 4, "end_frame": 6},
+            {"cycle": 1, "group": 1, "start_frame": 7, "end_frame": 9},
         ]
+
+    def test_stack_only_covers_lead_in(self):
+        info = build_cycle_info(max_time=5, group1_size=5, group2_size=5,
+                                skip_frames=1)
+        assert info == []
+
+    def test_zero_max_time(self):
+        info = build_cycle_info(max_time=0, group1_size=5, group2_size=5,
+                                skip_frames=1)
+        assert info == []
+
+    @pytest.mark.parametrize("g1,g2", [(0, 5), (5, 0)])
+    def test_zero_group_size_raises(self, g1, g2):
+        # A zero-size block never advances the cursor when skip_frames is 0,
+        # which used to hang forever. Fail loudly instead.
+        with pytest.raises(ValueError, match="must be >= 1"):
+            build_cycle_info(max_time=100, group1_size=g1, group2_size=g2,
+                             skip_frames=1)
+
+    def test_negative_skip_raises(self):
+        with pytest.raises(ValueError, match="must be >= 0"):
+            build_cycle_info(max_time=100, group1_size=5, group2_size=5,
+                             skip_frames=-1)
+
+
+class TestLeadInSpan:
+    def test_normal(self):
+        assert lead_in_span(max_time=100, group1_size=20) == (1, 20)
+
+    def test_clamped_to_short_stack(self):
+        # Shading must not run off the end of a stack shorter than the lead-in.
+        assert lead_in_span(max_time=8, group1_size=20) == (1, 8)
+
+    def test_no_frames(self):
+        assert lead_in_span(max_time=0, group1_size=20) is None
 
 
 class TestAnnotateWithCycleGroup:

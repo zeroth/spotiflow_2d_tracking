@@ -52,45 +52,97 @@ def compute_particles_per_frame(points: np.ndarray) -> tuple[pd.DataFrame, int]:
     return per_frame, n_negative_clipped
 
 
+def _iter_blocks(
+    max_time: int,
+    group1_size: int,
+    group2_size: int,
+    skip_frames: int,
+) -> list[dict]:
+    """Walk the raw acquisition blocks from frame 1.
+
+    Block *k* (0-indexed) holds ``group1_size`` frames when *k* is even and
+    ``group2_size`` when *k* is odd; its group number is ``(k % 2) + 1``. The
+    next block starts ``skip_frames`` frames after this one ends.
+
+    Only blocks that fit entirely within ``max_time`` are returned — a block
+    that would overrun ends the walk, since nothing after it can fit either.
+    """
+    sizes = (group1_size, group2_size)
+    blocks: list[dict] = []
+    current = 1
+    k = 0
+    while current <= max_time:
+        end = current + sizes[k % 2] - 1
+        if end > max_time:
+            break
+        blocks.append({
+            "group": (k % 2) + 1,
+            "start_frame": current,
+            "end_frame": end,
+        })
+        current = end + 1 + skip_frames
+        k += 1
+    return blocks
+
+
 def build_cycle_info(
     max_time: int,
     group1_size: int,
     group2_size: int,
     skip_frames: int,
 ) -> list[dict]:
-    """Generate cycle/group boundary information.
+    """Generate cycle/group boundary information. Cycles and frames are 1-indexed.
 
-    Logic mirrors papa_analysis.py:47-79. Cycles and frames are 1-indexed.
+    The first ``group1_size`` frames are the *lead-in*: readout that precedes
+    the first reactivation pulse, so it belongs to no cycle (see
+    :func:`lead_in_span`). Cycle 1 starts at the block after the lead-in, which
+    makes a cycle ``(group 2 block, group 1 block)`` in frame order — each
+    group-2 readout is paired with the group-1 readout that *follows* it.
+
+    Group identity follows the block alternation from frame 1 and never moves:
+    a ``group1_size``-sized block is always group 1, a ``group2_size``-sized
+    block always group 2.
+
+    Only complete cycles are returned — both blocks must fit entirely within
+    ``max_time``, so one cycle needs
+    ``group1_size + skip_frames + group2_size + skip_frames + group1_size``
+    frames. Nothing is clipped and no group is ever truncated.
+
+    Entries are in ascending frame order: the group-2 entry then the group-1
+    entry for each cycle.
     """
+    if group1_size < 1 or group2_size < 1:
+        raise ValueError("group1_size and group2_size must be >= 1")
+    if skip_frames < 0:
+        raise ValueError("skip_frames must be >= 0")
+
+    # Drop block 0 — the lead-in — then take what remains two blocks at a time.
+    # An odd trailing block is an incomplete cycle and is discarded.
+    after_lead_in = _iter_blocks(
+        max_time, group1_size, group2_size, skip_frames,
+    )[1:]
+
     cycle_info: list[dict] = []
-    cycle_num = 0
-    current_frame = 1
-
-    while current_frame <= max_time:
-        cycle_num += 1
-
-        g1_start = current_frame
-        g1_end = min(current_frame + group1_size - 1, max_time)
-        cycle_info.append({
-            "cycle": cycle_num,
-            "group": 1,
-            "start_frame": g1_start,
-            "end_frame": g1_end,
-        })
-        current_frame = g1_end + 1 + skip_frames
-
-        if current_frame <= max_time:
-            g2_start = current_frame
-            g2_end = min(current_frame + group2_size - 1, max_time)
+    for cycle_num, i in enumerate(range(0, len(after_lead_in) - 1, 2), start=1):
+        for block in (after_lead_in[i], after_lead_in[i + 1]):
             cycle_info.append({
                 "cycle": cycle_num,
-                "group": 2,
-                "start_frame": g2_start,
-                "end_frame": g2_end,
+                "group": block["group"],
+                "start_frame": block["start_frame"],
+                "end_frame": block["end_frame"],
             })
-            current_frame = g2_end + 1 + skip_frames
-
     return cycle_info
+
+
+def lead_in_span(max_time: int, group1_size: int) -> tuple[int, int] | None:
+    """Inclusive 1-indexed frame range of the excluded lead-in block.
+
+    Returns ``None`` when the stack has no frames. The end is clamped to
+    ``max_time`` so a stack shorter than ``group1_size`` still shades correctly.
+    """
+    if max_time < 1:
+        return None
+    return (1, min(group1_size, max_time))
 
 
 def annotate_with_cycle_group(
