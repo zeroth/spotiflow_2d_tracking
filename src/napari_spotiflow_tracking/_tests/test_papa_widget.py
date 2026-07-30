@@ -243,7 +243,7 @@ class TestPAPAWidgetTheming:
 
 class TestPAPAWidgetExportCSV:
     def _make_synthetic_layer(self, viewer):
-        rows = [[f, 10.0, 10.0] for f in range(12) for _ in range(3)]
+        rows = [[f, 10.0, 10.0] for f in range(17) for _ in range(3)]
         viewer.add_points(np.array(rows), name="spots")
 
     def test_export_writes_csv(self, papa_widget, tmp_path, monkeypatch):
@@ -251,22 +251,27 @@ class TestPAPAWidgetExportCSV:
         self._make_synthetic_layer(viewer)
         widget._plot_btn.click()
 
-        out_path = tmp_path / "papa.csv"
         from qtpy.QtWidgets import QFileDialog
         monkeypatch.setattr(
-            QFileDialog, "getSaveFileName",
-            lambda *a, **kw: (str(out_path), "CSV files (*.csv)"),
+            QFileDialog, "getExistingDirectory",
+            lambda *a, **kw: str(tmp_path),
         )
         widget._export_btn.click()
 
-        assert out_path.exists()
-        df = pd.read_csv(out_path)
-        assert list(df.columns) == ["frame", "n_particles", "cycle", "group"]
+        # Both per-frame and per-cycle CSVs should be written (both checkboxes default to checked).
+        per_frame_path = tmp_path / "papa_per_frame.csv"
+        per_cycle_path = tmp_path / "papa_per_cycle.csv"
+        assert per_frame_path.exists()
+        assert per_cycle_path.exists()
+
+        # Verify per-frame CSV structure.
+        df_frame = pd.read_csv(per_frame_path)
+        assert list(df_frame.columns) == ["frame", "n_particles", "cycle", "group"]
         # Frames are 1-indexed.
-        assert df["frame"].min() == 1
+        assert df_frame["frame"].min() == 1
         # Skip-gap frame (6) should be present with NaN cycle/group and
         # n_particles == 3 (the layer has 3 spots on every frame).
-        skip_row = df[df["frame"] == 6].iloc[0]
+        skip_row = df_frame[df_frame["frame"] == 6].iloc[0]
         assert pd.isna(skip_row["cycle"])
         assert pd.isna(skip_row["group"])
         assert int(skip_row["n_particles"]) == 3
@@ -278,8 +283,8 @@ class TestPAPAWidgetExportCSV:
 
         from qtpy.QtWidgets import QFileDialog
         monkeypatch.setattr(
-            QFileDialog, "getSaveFileName",
-            lambda *a, **kw: ("", ""),
+            QFileDialog, "getExistingDirectory",
+            lambda *a, **kw: "",
         )
         # Should not raise.
         widget._export_btn.click()
