@@ -141,7 +141,9 @@ class TestPAPAWidgetValidation:
 
 
 class TestPAPAWidgetPlotPipeline:
-    def _make_synthetic_layer(self, viewer, n_frames=12, spots_per_frame=3):
+    # The default 5/5/1 pattern needs 5 + 1 + 5 + 1 + 5 = 17 frames for one
+    # complete cycle, because the first group-1 block is an excluded lead-in.
+    def _make_synthetic_layer(self, viewer, n_frames=17, spots_per_frame=3):
         """Add a Points layer with `spots_per_frame` spots on each of `n_frames` frames."""
         rows = []
         rng = np.random.default_rng(0)
@@ -152,7 +154,7 @@ class TestPAPAWidgetPlotPipeline:
 
     def test_plot_renders_combined_axes(self, papa_widget):
         widget, viewer = papa_widget
-        self._make_synthetic_layer(viewer, n_frames=12)
+        self._make_synthetic_layer(viewer, n_frames=17)
         widget._group1_size.setText("5")
         widget._group2_size.setText("5")
         widget._skip_frames.setText("1")
@@ -161,30 +163,55 @@ class TestPAPAWidgetPlotPipeline:
 
     def test_plot_caches_per_frame_df(self, papa_widget):
         widget, viewer = papa_widget
-        self._make_synthetic_layer(viewer, n_frames=12, spots_per_frame=3)
+        self._make_synthetic_layer(viewer, n_frames=17, spots_per_frame=3)
         widget._plot_btn.click()
         df = widget._last_per_frame_df
         assert df is not None
         assert list(df.columns) == ["frame", "n_particles", "cycle", "group"]
-        assert df["n_particles"].tolist() == [3] * 12
+        assert df["n_particles"].tolist() == [3] * 17
+
+    def test_lead_in_frames_have_no_cycle(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_synthetic_layer(viewer, n_frames=17)
+        widget._plot_btn.click()
+        df = widget._last_per_frame_df
+        # Frames 1-5 are the excluded lead-in; 7-11 are cycle 1 group 2 and
+        # 13-17 are cycle 1 group 1.
+        lead_in = df[df["frame"].between(1, 5)]
+        assert lead_in["cycle"].isna().all()
+        assert lead_in["group"].isna().all()
+        assert df.loc[df["frame"] == 9, "group"].tolist() == [2]
+        assert df.loc[df["frame"] == 15, "group"].tolist() == [1]
 
     def test_plot_status_message(self, papa_widget):
         widget, viewer = papa_widget
-        self._make_synthetic_layer(viewer, n_frames=12)
+        self._make_synthetic_layer(viewer, n_frames=17)
         widget._plot_btn.click()
         assert "plotted" in widget._status_label.text().lower()
         assert "1 cycles" in widget._status_label.text() or \
                "1 cycle" in widget._status_label.text()
 
+    def test_zero_complete_cycles_reports_requirement(self, papa_widget):
+        widget, viewer = papa_widget
+        # 12 frames is one block short of a complete cycle.
+        self._make_synthetic_layer(viewer, n_frames=12)
+        widget._plot_btn.click()
+        text = widget._status_label.text()
+        assert "no complete cycles" in text.lower()
+        assert "17" in text
+        # Both figures must still render rather than raising.
+        assert len(widget._fig_combined.axes) == 1
+        assert len(widget._fig_ratio.axes) == 1
+
     def test_export_button_enabled_after_plot(self, papa_widget):
         widget, viewer = papa_widget
-        self._make_synthetic_layer(viewer, n_frames=12)
+        self._make_synthetic_layer(viewer, n_frames=17)
         widget._plot_btn.click()
         assert widget._export_btn.isEnabled() is True
 
     def test_active_tab_switches_to_plots(self, papa_widget):
         widget, viewer = papa_widget
-        self._make_synthetic_layer(viewer, n_frames=12)
+        self._make_synthetic_layer(viewer, n_frames=17)
         assert widget._tabs.currentIndex() == 0
         widget._plot_btn.click()
         assert widget._tabs.currentIndex() == 1
@@ -217,7 +244,7 @@ class TestPAPAWidgetRatioPlot:
 
 class TestPAPAWidgetTheming:
     def _make_synthetic_layer(self, viewer):
-        rows = [[f, 10.0, 10.0] for f in range(12) for _ in range(3)]
+        rows = [[f, 10.0, 10.0] for f in range(17) for _ in range(3)]
         viewer.add_points(np.array(rows), name="spots")
 
     def test_combined_figure_uses_dark_facecolor(self, papa_widget):

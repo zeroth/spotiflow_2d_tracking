@@ -21,6 +21,7 @@ from napari_spotiflow_tracking._papa_analysis import (
     build_cycle_info,
     compute_particles_per_frame,
     compute_per_cycle_summary,
+    lead_in_span,
 )
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -302,9 +303,14 @@ class PAPAWidget(QWidget):
         self._export_btn.setEnabled(True)
 
         n_cycles = max((c["cycle"] for c in cycle_info), default=0)
-        msg = f"Plotted {n_cycles} cycles across {max_time} frames."
-        if g1 + skip + g2 + skip > max_time and n_cycles > 0:
-            msg += " (cycle pattern exceeds frame range; only partial cycles drawn.)"
+        if n_cycles == 0:
+            frames_per_cycle = g1 + skip + g2 + skip + g1
+            msg = (
+                f"No complete cycles in {max_time} frames: the excluded "
+                f"lead-in plus one cycle needs {frames_per_cycle} frames."
+            )
+        else:
+            msg = f"Plotted {n_cycles} cycles across {max_time} frames."
         if n_neg > 0:
             msg += f" Negative frame indices found; clipped to 0 ({n_neg} rows)."
         self._status_label.setText(msg)
@@ -331,6 +337,13 @@ class PAPAWidget(QWidget):
             color=self.LINE_COLOR, linewidth=1.0,
         )
 
+        # Excluded lead-in: readout before the first pulse, in no cycle.
+        lead_in = lead_in_span(max_time, g1)
+        if lead_in is not None:
+            ax.axvspan(lead_in[0] - 0.5, lead_in[1] + 0.5, color="gray",
+                       alpha=0.25, linewidth=0,
+                       label="lead-in (excluded)", zorder=0)
+
         sep_colors = ["tab:blue", "tab:orange"]
         sep1_labeled = False
         sep2_labeled = False
@@ -353,17 +366,28 @@ class PAPAWidget(QWidget):
 
         ax.set_title(
             f"All Cycles Combined — Particles per Frame  "
-            f"(G1={g1}f + skip{skip}f + G2={g2}f + skip{skip}f)"
+            f"(lead-in {g1}f excluded; cycle = {label2} {g2}f + skip{skip}f "
+            f"+ {label1} {g1}f + skip{skip}f)"
         )
         ax.set_xlabel("Time (frame)")
         ax.set_ylabel("Number of Particles")
-        if sep1_labeled or sep2_labeled:
+        # The lead-in band alone is worth a legend, so ask matplotlib what it
+        # has rather than tracking the separator flags.
+        if ax.get_legend_handles_labels()[0]:
             ax.legend(loc="upper right", fontsize=8)
         ax.grid(alpha=0.3)
         self._style_figure(fig)
 
     def _render_ratio_plot(self, fig, per_cycle, label1, label2):
         fig.clear()
+        if len(per_cycle) == 0:
+            ax = fig.add_subplot(111)
+            ax.set_axis_off()
+            ax.text(0.5, 0.5, "No complete cycles in range",
+                    ha="center", va="center", transform=ax.transAxes)
+            self._style_figure(fig)
+            return
+
         cycles = per_cycle["cycle"].tolist()
         g1_counts = per_cycle[f"{label1}_count"].tolist()
         g2_counts = per_cycle[f"{label2}_count"].tolist()
