@@ -109,7 +109,7 @@ Pick an Image layer and apply any combination of crop, arithmetic, background re
 
 ### PAPA
 
-For cyclical / alternating experiments: pick the detected Points layer, set the cycle pattern (group sizes and skip frames), label the groups, and **Plot** to see particles-per-frame and per-cycle bar charts. **Export CSV** for the annotated per-frame table.
+For cyclical / alternating experiments: pick the detected Points layer, set the cycle pattern (group sizes and skip frames), label the groups, and **Plot** to see particles-per-frame and per-cycle bar charts. The first `group 1 size` frames are treated as an excluded lead-in — the readout before the first pulse — so cycle 1 starts at the following block and each group-2 readout is paired with the group-1 readout after it. Incomplete trailing cycles are not reported. **Export CSV** for the annotated per-frame and per-cycle tables.
 
 ## Bulk / headless processing
 
