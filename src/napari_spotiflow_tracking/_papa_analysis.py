@@ -188,6 +188,13 @@ def compute_per_cycle_summary(
     can be exported as well as rendered.
     """
     cycles = sorted({info["cycle"] for info in cycle_info})
+    columns = [
+        "cycle",
+        f"{label1}_count",
+        f"{label2}_count",
+        f"{label1}_over_{label2}",
+        f"{label2}_over_{label1}",
+    ]
     rows = []
     for cyc in cycles:
         g1_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 1]
@@ -219,4 +226,6 @@ def compute_per_cycle_summary(
                 g2_total / g1_total if g1_total > 0 else float("nan"),
         })
 
-    return pd.DataFrame(rows)
+    # Pass `columns` explicitly so a zero-cycle result is still an empty frame
+    # with the right columns rather than a shapeless one the plots can't index.
+    return pd.DataFrame(rows, columns=columns)

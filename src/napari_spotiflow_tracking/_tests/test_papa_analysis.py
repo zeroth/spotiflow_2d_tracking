@@ -8,6 +8,7 @@ from napari_spotiflow_tracking._papa_analysis import (
     annotate_with_cycle_group,
     build_cycle_info,
     compute_particles_per_frame,
+    compute_per_cycle_summary,
     lead_in_span,
 )
 
@@ -211,3 +212,34 @@ class TestAnnotateWithCycleGroup:
         out = annotate_with_cycle_group(per_frame, cycle_info)
         assert str(out["cycle"].dtype) == "Int64"
         assert str(out["group"].dtype) == "Int64"
+
+
+class TestComputePerCycleSummary:
+    def test_counts_and_ratios(self):
+        # 17 frames, g1=5/g2=5/skip=1 -> one cycle: G2 7-11, G1 13-17.
+        per_frame = pd.DataFrame({
+            "frame": list(range(1, 18)),
+            "n_particles": [0] * 17,
+        })
+        per_frame.loc[per_frame["frame"].between(7, 11), "n_particles"] = 2
+        per_frame.loc[per_frame["frame"].between(13, 17), "n_particles"] = 1
+        cycle_info = build_cycle_info(max_time=17, group1_size=5,
+                                      group2_size=5, skip_frames=1)
+
+        out = compute_per_cycle_summary(per_frame, cycle_info, "DR", "PAPA")
+
+        assert out["cycle"].tolist() == [1]
+        assert out["PAPA_count"].tolist() == [10]   # 5 frames x 2 spots
+        assert out["DR_count"].tolist() == [5]      # 5 frames x 1 spot
+        assert out["PAPA_over_DR"].tolist() == [2.0]
+        assert out["DR_over_PAPA"].tolist() == [0.5]
+
+    def test_empty_cycle_info_keeps_columns(self):
+        # A stack too short for one complete cycle must still yield a frame the
+        # plotting code can index into.
+        per_frame = pd.DataFrame({"frame": [1, 2], "n_particles": [1, 1]})
+        out = compute_per_cycle_summary(per_frame, [], "DR", "PAPA")
+        assert len(out) == 0
+        assert list(out.columns) == [
+            "cycle", "DR_count", "PAPA_count", "DR_over_PAPA", "PAPA_over_DR",
+        ]
