@@ -22,6 +22,14 @@ The widget has two tabs: **Input** (configuration) and **Plots** (results).
 
 ### Cycle Pattern
 
+!!! warning "Changed 2026-07-30"
+
+    Output produced before this date paired each group-2 readout with the
+    group-1 readout **preceding** it, and clipped a trailing incomplete cycle
+    instead of dropping it. Per-cycle CSVs and ratio graphs from before and
+    after this change are **not comparable** — the cycle numbering and column
+    names are identical, so the files cannot be told apart by inspection.
+
 Define how frames repeat. The **first `Group 1 size` frames are a lead-in** —
 readout that precedes the first reactivation pulse — and belong to no cycle.
 Cycle 1 starts at the block after that, so a cycle runs
@@ -38,12 +46,13 @@ Group identity follows the block alternation from frame 1 and never moves: a
 `Group 1 size`-length block is always group 1, a `Group 2 size`-length block
 always group 2. No block is ever re-sliced.
 
-One complete cycle needs
-`Group 1 size + Skip + Group 2 size + Skip + Group 1 size` frames — with
-`G1=10, G2=10, Skip=2` that is 34. **Incomplete cycles are not reported:** both
-of a cycle's blocks must fit entirely within the stack, so a trailing block with
-no partner is dropped rather than truncated. If no complete cycle fits, the
-status bar says so and names the frame count required.
+The stack must be at least
+`Group 1 size + Skip + Group 2 size + Skip + Group 1 size` frames long — the
+excluded lead-in plus one cycle — with `G1=10, G2=10, Skip=2` that is 34.
+**Incomplete cycles are not reported:** both of a cycle's blocks must fit
+entirely within the stack, so a trailing block with no partner is dropped
+rather than truncated. If no complete cycle fits, the status bar says so and
+names the frame count required.
 
 ### Labels
 
@@ -68,10 +77,14 @@ status bar says so and names the frame count required.
 Four stacked figures, each with the matplotlib navigation toolbar:
 
 1. **Particles per frame** — line plot of detected particle count over the
-   entire experiment. The excluded lead-in is shaded grey, G1 / G2 regions get
-   colored backgrounds, and vertical separators mark cycle boundaries. The
+   entire experiment. The excluded lead-in is shaded grey, and a colored
+   vertical line marks the end of every group block — both mid-cycle and at
+   cycle boundaries, so the lines don't single out cycle boundaries. The
    trace covers every frame, so lead-in and skip data stay visible even though
-   they belong to no cycle.
+   they belong to no cycle. The headless script's equivalent figure
+   (`scripts/papa_analysis.py`) additionally shades each group's frame range
+   with a colored background band and marks cycle boundaries with a dotted
+   separator.
 2. **Total counts per group per cycle** — bar chart, G1 and G2 side-by-side
    for every cycle.
 3. **G1 / G2 ratio** per cycle.

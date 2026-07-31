@@ -384,7 +384,8 @@ class PAPAWidget(QWidget):
             ax = fig.add_subplot(111)
             ax.set_axis_off()
             ax.text(0.5, 0.5, "No complete cycles in range",
-                    ha="center", va="center", transform=ax.transAxes)
+                    ha="center", va="center", transform=ax.transAxes,
+                    color=self.NAPARI_FG)
             self._style_figure(fig)
             return
 
@@ -460,7 +461,10 @@ class PAPAWidget(QWidget):
 
         if want_per_cycle:
             if self._last_per_cycle_df is None or len(self._last_per_cycle_df) == 0:
-                errors.append("per-cycle: no aggregated data (re-run Plot).")
+                errors.append(
+                    "per-cycle: no complete cycle fits in the current frame"
+                    " range, so there is nothing to aggregate."
+                )
             else:
                 try:
                     path = out_dir / "papa_per_cycle.csv"

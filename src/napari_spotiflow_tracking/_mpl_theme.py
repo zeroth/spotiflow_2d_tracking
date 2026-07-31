@@ -20,6 +20,8 @@ def style_figure(fig: Figure) -> None:
         ax.xaxis.label.set_color(NAPARI_FG)
         ax.yaxis.label.set_color(NAPARI_FG)
         ax.title.set_color(NAPARI_FG)
+        for text in ax.texts:
+            text.set_color(NAPARI_FG)
         legend = ax.get_legend()
         if legend is not None:
             legend.get_frame().set_facecolor(NAPARI_BG)

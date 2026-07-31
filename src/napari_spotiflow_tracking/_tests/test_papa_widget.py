@@ -267,6 +267,21 @@ class TestPAPAWidgetTheming:
         for ax in widget._fig_ratio.axes:
             assert ax.get_facecolor() == expected
 
+    def test_zero_cycle_placeholder_uses_theme_foreground(self, papa_widget):
+        # 12 frames is one block short of a complete cycle under the default
+        # 5/5/1 pattern, so the ratio plot falls back to the placeholder
+        # text. It must not stay matplotlib's default black on the dark
+        # napari background.
+        widget, viewer = papa_widget
+        rows = [[f, 10.0, 10.0] for f in range(12) for _ in range(3)]
+        viewer.add_points(np.array(rows), name="spots")
+        widget._plot_btn.click()
+
+        from matplotlib.colors import to_rgba
+        ax = widget._fig_ratio.axes[0]
+        assert len(ax.texts) == 1
+        assert to_rgba(ax.texts[0].get_color()) == to_rgba(widget.NAPARI_FG)
+
 
 class TestPAPAWidgetExportCSV:
     def _make_synthetic_layer(self, viewer):

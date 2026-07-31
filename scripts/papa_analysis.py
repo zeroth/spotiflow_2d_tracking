@@ -55,7 +55,19 @@ def parse_args():
                    help="Legend label for group 2 separator (default: PAPA).")
     p.add_argument("--raw", action="store_true", default=False,
                    help="Crop right half of image before analysis and save as _crop.tif.")
-    return p.parse_args()
+    args = p.parse_args()
+
+    # Validate the cycle-pattern arguments up front: build_cycle_info would
+    # reject the same bad input, but only after model loading, per-frame
+    # detection, and mask/blob-CSV writing have already run.
+    if args.group1_size < 1:
+        p.error("group1_size must be >= 1")
+    if args.group2_size < 1:
+        p.error("group2_size must be >= 1")
+    if args.skip_frames < 0:
+        p.error("skip_frames must be >= 0")
+
+    return args
 
 
 def make_combined_graph(particles_per_frame, cycle_info, max_time,
@@ -113,7 +125,8 @@ def make_combined_graph(particles_per_frame, cycle_info, max_time,
     )
     ax.set_xlabel("Time (frame)")
     ax.set_ylabel("Number of Particles")
-    ax.legend(loc="upper right", fontsize=8)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(loc="upper right", fontsize=8)
     ax.grid(alpha=0.3)
     plt.tight_layout()
     fig.savefig(save_path, dpi=150)

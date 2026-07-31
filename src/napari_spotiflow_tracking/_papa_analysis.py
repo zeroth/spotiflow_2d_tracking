@@ -104,9 +104,10 @@ def build_cycle_info(
     block always group 2.
 
     Only complete cycles are returned — both blocks must fit entirely within
-    ``max_time``, so one cycle needs
+    ``max_time``, so the stack must be at least
     ``group1_size + skip_frames + group2_size + skip_frames + group1_size``
-    frames. Nothing is clipped and no group is ever truncated.
+    frames long: the excluded lead-in plus one cycle. Nothing is clipped and
+    no group is ever truncated.
 
     Entries are in ascending frame order: the group-2 entry then the group-1
     entry for each cycle.
@@ -140,6 +141,8 @@ def lead_in_span(max_time: int, group1_size: int) -> tuple[int, int] | None:
     Returns ``None`` when the stack has no frames. The end is clamped to
     ``max_time`` so a stack shorter than ``group1_size`` still shades correctly.
     """
+    if group1_size < 1:
+        raise ValueError("group1_size must be >= 1")
     if max_time < 1:
         return None
     return (1, min(group1_size, max_time))
@@ -151,8 +154,9 @@ def annotate_with_cycle_group(
 ) -> pd.DataFrame:
     """Add ``cycle`` and ``group`` columns (nullable Int64) to ``per_frame``.
 
-    Frames falling in skip-gap regions receive ``NaN`` in both columns.
-    Returns a new DataFrame; does not mutate the input.
+    Frames falling in skip-gap regions receive ``NaN`` in both columns, as do
+    frames in the excluded lead-in (see :func:`lead_in_span`), since neither
+    belongs to any cycle. Returns a new DataFrame; does not mutate the input.
     """
     out = per_frame.copy()
     cycle_col = pd.array([pd.NA] * len(out), dtype="Int64")

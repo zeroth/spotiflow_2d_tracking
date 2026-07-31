@@ -170,6 +170,10 @@ class TestLeadInSpan:
     def test_no_frames(self):
         assert lead_in_span(max_time=0, group1_size=20) is None
 
+    def test_zero_group1_size_raises(self):
+        with pytest.raises(ValueError, match="must be >= 1"):
+            lead_in_span(max_time=100, group1_size=0)
+
 
 class TestAnnotateWithCycleGroup:
     def test_assigns_cycle_and_group(self):
