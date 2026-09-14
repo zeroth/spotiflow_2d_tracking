@@ -191,6 +191,144 @@ class TestMsdBasicFit:
         assert len(fit["y_fit"]) == len(series)
 
 
+class TestMsdStats:
+    """Per-lag mean, spread and pair count behind the MSD error bars."""
+
+    def test_ballistic_track_has_zero_spread(self):
+        from napari_spotiflow_tracking._track_properties import msd_stats
+        # Every displacement at a given lag is identical → sem is exactly 0.
+        pos = np.array([[float(i), 0.0] for i in range(6)])
+        out = msd_stats(pos, limit=25)
+        assert list(out.index) == [1, 2, 3, 4, 5]
+        assert out["msd"].iloc[0] == pytest.approx(1.0)
+        assert out["msd"].iloc[2] == pytest.approx(9.0)
+        # The final lag has a single pair, so its sem is NaN by definition.
+        assert np.allclose(out["sem"].to_numpy()[:-1], 0.0)
+
+    def test_pair_counts_decrease_with_lag(self):
+        from napari_spotiflow_tracking._track_properties import msd_stats
+        pos = np.array([[float(i), 0.0] for i in range(6)])
+        out = msd_stats(pos, limit=25)
+        # N=6 → 5 pairs at lag 1, 4 at lag 2, … 1 at lag 5.
+        assert list(out["n_pairs"]) == [5, 4, 3, 2, 1]
+
+    def test_msd_column_matches_plain_msd(self):
+        from napari_spotiflow_tracking._track_properties import msd as _msd
+        from napari_spotiflow_tracking._track_properties import msd_stats
+        rng = np.random.default_rng(3)
+        pos = np.cumsum(rng.normal(0, 1.0, (30, 2)), axis=0)
+        stats = msd_stats(pos, limit=10)
+        plain = _msd(pos, limit=10)
+        assert np.allclose(stats["msd"].to_numpy(), plain.to_numpy())
+
+    def test_noisy_track_has_positive_sem(self):
+        from napari_spotiflow_tracking._track_properties import msd_stats
+        rng = np.random.default_rng(4)
+        pos = np.cumsum(rng.normal(0, 1.0, (40, 2)), axis=0)
+        out = msd_stats(pos, limit=10)
+        assert (out["sem"].iloc[:5] > 0).all()
+
+    def test_single_pair_lag_has_nan_sem(self):
+        from napari_spotiflow_tracking._track_properties import msd_stats
+        # The largest lag has one pair — no spread is defined for n=1.
+        pos = np.array([[float(i), 0.0] for i in range(4)])
+        out = msd_stats(pos, limit=25)
+        assert out["n_pairs"].iloc[-1] == 1
+        assert np.isnan(out["sem"].iloc[-1])
+
+    def test_limit_clipped_and_validated(self):
+        from napari_spotiflow_tracking._track_properties import msd_stats
+        pos = np.array([[0.0, 0.0], [1.0, 0.0]])
+        assert len(msd_stats(pos, limit=25)) == 1
+        with pytest.raises(ValueError):
+            msd_stats(np.zeros((1, 2)), limit=5)
+        with pytest.raises(ValueError):
+            msd_stats(np.zeros((5, 3)), limit=5)
+
+
+class TestMsdFitWithLocalizationError:
+    """``sigma`` adds the ``+ 4σ²`` localization-error offset to the model."""
+
+    @staticmethod
+    def _synthetic(d, alpha, sigma, n=20):
+        t = np.arange(1, n + 1, dtype=float)
+        return pd.Series(4.0 * d * t ** alpha + 4.0 * sigma ** 2, index=t)
+
+    def test_sigma_defaults_to_zero_no_offset(self):
+        from napari_spotiflow_tracking._track_properties import msd_basic_fit
+        series = self._synthetic(d=0.05, alpha=0.8, sigma=0.0)
+        fit = msd_basic_fit(series, delta=1.0)
+        assert fit["alpha"] == pytest.approx(0.8, abs=1e-3)
+        assert fit["diffusion_coefficient"] == pytest.approx(0.05, rel=1e-3)
+
+    def test_sigma_offset_recovers_d_and_alpha(self):
+        from napari_spotiflow_tracking._track_properties import msd_basic_fit
+        # 35 nm localization error, coordinates in µm.
+        series = self._synthetic(d=0.05, alpha=0.8, sigma=0.035)
+        fit = msd_basic_fit(series, delta=1.0, sigma=0.035)
+        assert fit["alpha"] == pytest.approx(0.8, abs=1e-2)
+        assert fit["diffusion_coefficient"] == pytest.approx(0.05, rel=1e-2)
+
+    def test_ignoring_a_real_offset_biases_alpha_low(self):
+        """Sanity check that the offset term actually matters."""
+        from napari_spotiflow_tracking._track_properties import msd_basic_fit
+        series = self._synthetic(d=0.002, alpha=0.9, sigma=0.035)
+        with_offset = msd_basic_fit(series, delta=1.0, sigma=0.035)
+        without = msd_basic_fit(series, delta=1.0)
+        assert with_offset["alpha"] == pytest.approx(0.9, abs=1e-2)
+        assert without["alpha"] < with_offset["alpha"]
+
+    def test_y_fit_includes_the_offset(self):
+        from napari_spotiflow_tracking._track_properties import msd_basic_fit
+        series = self._synthetic(d=0.05, alpha=0.8, sigma=0.035)
+        fit = msd_basic_fit(series, delta=1.0, sigma=0.035)
+        assert np.allclose(fit["y_fit"], series.to_numpy(), rtol=1e-2)
+
+    def test_return_keys_unchanged_with_sigma(self):
+        from napari_spotiflow_tracking._track_properties import msd_basic_fit
+        series = self._synthetic(d=0.05, alpha=0.8, sigma=0.035)
+        fit = msd_basic_fit(series, delta=1.0, sigma=0.035)
+        assert set(fit.keys()) == {
+            "x", "y_fit", "diffusion_coefficient", "alpha",
+        }
+
+
+class TestClassifyMotility:
+    """α thresholds from Nature Commun Biol 4, 137 (2021), Methods."""
+
+    def test_constrained_below_zero_point_four(self):
+        from napari_spotiflow_tracking._track_properties import classify_motility
+        assert classify_motility(0.0) == "constrained"
+        assert classify_motility(0.39) == "constrained"
+
+    def test_diffusive_between_the_thresholds(self):
+        from napari_spotiflow_tracking._track_properties import classify_motility
+        assert classify_motility(0.41) == "diffusive"
+        assert classify_motility(1.0) == "diffusive"
+        assert classify_motility(1.19) == "diffusive"
+
+    def test_directed_above_one_point_two(self):
+        from napari_spotiflow_tracking._track_properties import classify_motility
+        assert classify_motility(1.21) == "directed"
+        assert classify_motility(2.0) == "directed"
+
+    def test_boundaries_are_inclusive_of_diffusive(self):
+        from napari_spotiflow_tracking._track_properties import classify_motility
+        assert classify_motility(0.4) == "diffusive"
+        assert classify_motility(1.2) == "diffusive"
+
+    def test_nan_is_unclassified(self):
+        from napari_spotiflow_tracking._track_properties import classify_motility
+        assert classify_motility(np.nan) == "unclassified"
+        assert classify_motility(None) == "unclassified"
+
+    def test_thresholds_exposed_as_constants(self):
+        from napari_spotiflow_tracking import _track_properties as tp
+        assert tp.ALPHA_CONSTRAINED_MAX == 0.4
+        assert tp.ALPHA_DIRECTED_MIN == 1.2
+        assert tp.MOTILITY_CLASSES == ("constrained", "diffusive", "directed")
+
+
 class TestFindSteps:
     def test_find_steps_no_steps_constant_data(self):
         from napari_spotiflow_tracking._track_properties import find_steps

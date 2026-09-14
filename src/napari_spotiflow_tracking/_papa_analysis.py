@@ -58,25 +58,31 @@ def _iter_blocks(
     group2_size: int,
     skip_frames: int,
 ) -> list[dict]:
-    """Walk the raw acquisition blocks from frame 1.
+    """Walk the acquisition blocks from frame 1.
 
-    Block *k* (0-indexed) holds ``group1_size`` frames when *k* is even and
-    ``group2_size`` when *k* is odd; its group number is ``(k % 2) + 1``. The
-    next block starts ``skip_frames`` frames after this one ends.
+    Block 0 is the *lead-in*: ``group1_size`` frames of readout preceding the
+    first pulse, belonging to no cycle, reported with ``group: None``. The
+    group alternation is anchored at block 1, **not** at frame 1 — from there
+    block *k* holds ``group1_size`` frames and is group 1 when *k* is odd, and
+    ``group2_size`` frames and group 2 when *k* is even. The next block starts
+    ``skip_frames`` frames after the previous one ends.
 
     Only blocks that fit entirely within ``max_time`` are returned — a block
     that would overrun ends the walk, since nothing after it can fit either.
     """
-    sizes = (group1_size, group2_size)
     blocks: list[dict] = []
     current = 1
     k = 0
     while current <= max_time:
-        end = current + sizes[k % 2] - 1
+        # The lead-in is group1_size long, like the group-1 block that follows
+        # it, so blocks 0 and 1 have the same length.
+        is_group1 = k % 2 == 1
+        size = group1_size if (k == 0 or is_group1) else group2_size
+        end = current + size - 1
         if end > max_time:
             break
         blocks.append({
-            "group": (k % 2) + 1,
+            "group": None if k == 0 else (1 if is_group1 else 2),
             "start_frame": current,
             "end_frame": end,
         })
@@ -95,21 +101,20 @@ def build_cycle_info(
 
     The first ``group1_size`` frames are the *lead-in*: readout that precedes
     the first reactivation pulse, so it belongs to no cycle (see
-    :func:`lead_in_span`). Cycle 1 starts at the block after the lead-in, which
-    makes a cycle ``(group 2 block, group 1 block)`` in frame order — each
-    group-2 readout is paired with the group-1 readout that *follows* it.
+    :func:`lead_in_span`). The cycle pattern starts fresh at the block after
+    it, so cycle 1 opens with a group-1 block and a cycle is
+    ``(group 1 block, group 2 block)`` in frame order.
 
-    Group identity follows the block alternation from frame 1 and never moves:
-    a ``group1_size``-sized block is always group 1, a ``group2_size``-sized
-    block always group 2.
+    A ``group1_size``-sized block is always group 1 and a ``group2_size``-sized
+    block always group 2, so no block is ever re-sliced.
 
     Only complete cycles are returned — both blocks must fit entirely within
     ``max_time``, so the stack must be at least
-    ``group1_size + skip_frames + group2_size + skip_frames + group1_size``
+    ``group1_size + skip_frames + group1_size + skip_frames + group2_size``
     frames long: the excluded lead-in plus one cycle. Nothing is clipped and
     no group is ever truncated.
 
-    Entries are in ascending frame order: the group-2 entry then the group-1
+    Entries are in ascending frame order: the group-1 entry then the group-2
     entry for each cycle.
     """
     if group1_size < 1 or group2_size < 1:
@@ -148,6 +153,36 @@ def lead_in_span(max_time: int, group1_size: int) -> tuple[int, int] | None:
     return (1, min(group1_size, max_time))
 
 
+def normalize_min_max(
+    per_frame: pd.DataFrame,
+    range_frames: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame | None, tuple[float, float]]:
+    """Rescale ``n_particles`` to 0-1 as ``(n - min) / (max - min)``.
+
+    ``range_frames`` supplies the rows the min and max are taken from, and
+    defaults to ``per_frame`` itself. Pass a subset to scale against part of
+    the stack — the cycle frames, say, leaving out the excluded lead-in. Every
+    row of ``per_frame`` is still rescaled; rows outside the chosen range land
+    outside 0-1 rather than being clipped, so nothing is silently hidden.
+
+    Returns ``(normalized, (min, max))``. A flat or empty trace has no range to
+    scale against and would divide by zero, so ``normalized`` is ``None`` and
+    the caller skips. Never mutates the input.
+    """
+    source = per_frame if range_frames is None else range_frames
+    counts = source["n_particles"]
+    if len(counts) == 0:
+        return None, (0.0, 0.0)
+
+    lo, hi = float(counts.min()), float(counts.max())
+    if hi <= lo:
+        return None, (lo, hi)
+
+    out = per_frame.copy()
+    out["n_particles"] = (out["n_particles"] - lo) / (hi - lo)
+    return out, (lo, hi)
+
+
 def annotate_with_cycle_group(
     per_frame: pd.DataFrame,
     cycle_info: list[dict],
@@ -175,27 +210,69 @@ def annotate_with_cycle_group(
     return out
 
 
+def ratio_window_length(block_length: int, frame_fraction: float) -> int:
+    """How many leading frames of a block the ratio counts.
+
+    Rounds ``block_length * frame_fraction`` to the nearest whole frame, with a
+    floor of one: a fraction small enough to round to zero would leave the
+    ratio with no data at all and turn every cycle into NaN.
+    """
+    if block_length < 1:
+        return 0
+    return max(1, min(block_length, round(block_length * frame_fraction)))
+
+
+def _block_sum(per_frame: pd.DataFrame, block: dict,
+               frame_fraction: float) -> int:
+    """Total ``n_particles`` over the first ``frame_fraction`` of ``block``."""
+    length = block["end_frame"] - block["start_frame"] + 1
+    end = block["start_frame"] + ratio_window_length(length, frame_fraction) - 1
+    mask = (
+        (per_frame["frame"] >= block["start_frame"])
+        & (per_frame["frame"] <= end)
+    )
+    # Select the column before masking: `.loc[mask, col]` types as a scalar
+    # union, so `.sum()` on it does not check.
+    return int(per_frame["n_particles"][mask].sum())
+
+
 def compute_per_cycle_summary(
     per_frame: pd.DataFrame,
     cycle_info: list[dict],
     label1: str = "G1",
     label2: str = "G2",
+    frame_fraction: float = 1.0,
 ) -> pd.DataFrame:
     """Aggregate ``per_frame`` counts to per-cycle totals and ratios.
 
     Returns a DataFrame with one row per cycle and columns:
       ``cycle``, ``<label1>_count``, ``<label2>_count``,
+      ``<label1>_ratio_count``, ``<label2>_ratio_count``,
       ``<label1>_over_<label2>``, ``<label2>_over_<label1>``.
+
+    ``frame_fraction`` (0 < f <= 1) restricts the ratio to the *first* that
+    fraction of each group block — the response right after the pulse, before
+    it decays. It affects the ratio only: the ``_count`` columns always hold
+    the whole-block totals, so anything displaying them is unaffected, while
+    the ``_ratio_count`` columns record the counts the ratio was actually
+    computed from. At the default 1.0 the two pairs are identical.
 
     Ratios use NaN when the denominator is zero. This is the data behind the
     bar/ratio subplots in :class:`PAPAWidget`'s plots tab — exposed here so it
     can be exported as well as rendered.
     """
+    if not 0 < frame_fraction <= 1:
+        raise ValueError(
+            f"frame_fraction must be > 0 and <= 1, got {frame_fraction}"
+        )
+
     cycles = sorted({info["cycle"] for info in cycle_info})
     columns = [
         "cycle",
         f"{label1}_count",
         f"{label2}_count",
+        f"{label1}_ratio_count",
+        f"{label2}_ratio_count",
         f"{label1}_over_{label2}",
         f"{label2}_over_{label1}",
     ]
@@ -204,30 +281,23 @@ def compute_per_cycle_summary(
         g1_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 1]
         g2_info = [i for i in cycle_info if i["cycle"] == cyc and i["group"] == 2]
 
-        g1_total = 0
-        if g1_info:
-            mask = (
-                (per_frame["frame"] >= g1_info[0]["start_frame"])
-                & (per_frame["frame"] <= g1_info[0]["end_frame"])
-            )
-            g1_total = int(per_frame.loc[mask, "n_particles"].sum())
-
-        g2_total = 0
-        if g2_info:
-            mask = (
-                (per_frame["frame"] >= g2_info[0]["start_frame"])
-                & (per_frame["frame"] <= g2_info[0]["end_frame"])
-            )
-            g2_total = int(per_frame.loc[mask, "n_particles"].sum())
+        g1_total = _block_sum(per_frame, g1_info[0], 1.0) if g1_info else 0
+        g2_total = _block_sum(per_frame, g2_info[0], 1.0) if g2_info else 0
+        g1_ratio = (_block_sum(per_frame, g1_info[0], frame_fraction)
+                    if g1_info else 0)
+        g2_ratio = (_block_sum(per_frame, g2_info[0], frame_fraction)
+                    if g2_info else 0)
 
         rows.append({
             "cycle": int(cyc),
             f"{label1}_count": g1_total,
             f"{label2}_count": g2_total,
+            f"{label1}_ratio_count": g1_ratio,
+            f"{label2}_ratio_count": g2_ratio,
             f"{label1}_over_{label2}":
-                g1_total / g2_total if g2_total > 0 else float("nan"),
+                g1_ratio / g2_ratio if g2_ratio > 0 else float("nan"),
             f"{label2}_over_{label1}":
-                g2_total / g1_total if g1_total > 0 else float("nan"),
+                g2_ratio / g1_ratio if g1_ratio > 0 else float("nan"),
         })
 
     # Pass `columns` explicitly so a zero-cycle result is still an empty frame

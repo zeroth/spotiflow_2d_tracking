@@ -42,9 +42,13 @@ from napari_spotiflow_tracking._mpl_theme import style_figure
 _POINTS_FILTER_WHITELIST = frozenset({
     "intensity", "mean_intensity", "max_intensity", "min_intensity", "area",
 })
-_TRACKS_FILTER_WHITELIST = frozenset({ "length" })
+_TRACKS_FILTER_WHITELIST = frozenset({
+    "length", "mean_intensity", "max_intensity",
+})
 
 _POINTS_HISTOGRAM_WHITELIST = _POINTS_FILTER_WHITELIST  # all 5 properties
+# Tracks histograms plot raw values on a shared axis, so intensity columns
+# (whose scale dwarfs track length) stay filter-only.
 _TRACKS_HISTOGRAM_WHITELIST = frozenset({"length"})
 
 
@@ -413,10 +417,10 @@ class FilterPanel(QWidget):
                 cb.toggled.connect(self._redraw_histogram)
                 row.addWidget(cb)
                 self._hist_checkboxes[col] = cb
-            # else:
-            #     spacer = QWidget()
-            #     spacer.setFixedWidth(self._ROW_CB_WIDTH)
-            #     row.addWidget(spacer)
+            else:
+                spacer = QWidget()
+                spacer.setFixedWidth(self._ROW_CB_WIDTH)
+                row.addWidget(spacer)
 
             label = QLabel(col)
             label.setMinimumWidth(self._ROW_LABEL_WIDTH)

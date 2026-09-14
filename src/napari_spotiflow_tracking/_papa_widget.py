@@ -8,7 +8,7 @@ from matplotlib.backends.backend_qtagg import (
     NavigationToolbar2QT as NavigationToolbar,
 )
 from matplotlib.figure import Figure
-from qtpy.QtGui import QIntValidator
+from qtpy.QtGui import QDoubleValidator, QIntValidator
 
 from napari_spotiflow_tracking._mpl_theme import (
     LINE_COLOR as _SHARED_LINE_COLOR,
@@ -106,6 +106,20 @@ class PAPAWidget(QWidget):
         self._skip_frames.setValidator(QIntValidator(0, 100, self))
         row3.addWidget(self._skip_frames)
         cycle_layout.addLayout(row3)
+
+        row4 = QHBoxLayout()
+        row4.addWidget(QLabel("Ratio frame fraction:"))
+        self._ratio_frame_fraction = QLineEdit("1.0")
+        self._ratio_frame_fraction.setValidator(
+            QDoubleValidator(0.0, 1.0, 3, self)
+        )
+        self._ratio_frame_fraction.setToolTip(
+            "Fraction (0-1] of each group's frames used for the ratio, taken "
+            "from the start of the block. Affects the ratio only — the plotted "
+            "trace and the total counts always use every frame."
+        )
+        row4.addWidget(self._ratio_frame_fraction)
+        cycle_layout.addLayout(row4)
 
         cycle_group.setLayout(cycle_layout)
         layout.addWidget(cycle_group)
@@ -227,6 +241,24 @@ class PAPAWidget(QWidget):
             return None
         return value
 
+    def _parse_fraction_field(self, field, name: str) -> float | None:
+        """Parse a field holding a fraction in (0, 1]; None on bad input.
+
+        Zero is rejected rather than clamped: a window of no frames would make
+        every ratio NaN, which reads as a bug rather than as a setting.
+        """
+        text = field.text().strip()
+        message = f"{name} must be a number greater than 0 and at most 1."
+        try:
+            value = float(text)
+        except ValueError:
+            self._set_status_error(message)
+            return None
+        if not 0 < value <= 1:
+            self._set_status_error(message)
+            return None
+        return value
+
     def _validate_inputs(self):
         """Returns a tuple (points, g1, g2, skip, label1, label2) on success,
         or None if any guard failed (status already updated)."""
@@ -264,16 +296,21 @@ class PAPAWidget(QWidget):
         skip = self._parse_int_field(self._skip_frames, "Skip frames", 0)
         if skip is None:
             return None
+        fraction = self._parse_fraction_field(
+            self._ratio_frame_fraction, "Ratio frame fraction",
+        )
+        if fraction is None:
+            return None
 
         label1 = self._label_group1.text() or "G1"
         label2 = self._label_group2.text() or "G2"
-        return data, g1, g2, skip, label1, label2
+        return data, g1, g2, skip, fraction, label1, label2
 
     def _on_plot_clicked(self):
         validated = self._validate_inputs()
         if validated is None:
             return
-        data, g1, g2, skip, label1, label2 = validated
+        data, g1, g2, skip, fraction, label1, label2 = validated
 
         per_frame, n_neg = compute_particles_per_frame(data)
         if len(per_frame) == 0:
@@ -291,10 +328,10 @@ class PAPAWidget(QWidget):
         self._canvas_combined.draw_idle()
 
         per_cycle = compute_per_cycle_summary(
-            per_frame, cycle_info, label1, label2,
+            per_frame, cycle_info, label1, label2, frame_fraction=fraction,
         )
         self._render_ratio_plot(
-            self._fig_ratio, per_cycle, label1, label2,
+            self._fig_ratio, per_cycle, label1, label2, fraction,
         )
         self._canvas_ratio.draw_idle()
 
@@ -304,7 +341,7 @@ class PAPAWidget(QWidget):
 
         n_cycles = max((c["cycle"] for c in cycle_info), default=0)
         if n_cycles == 0:
-            frames_per_cycle = g1 + skip + g2 + skip + g1
+            frames_per_cycle = g1 + skip + g1 + skip + g2
             msg = (
                 f"No complete cycles in {max_time} frames: the excluded "
                 f"lead-in plus one cycle needs {frames_per_cycle} frames."
@@ -366,8 +403,8 @@ class PAPAWidget(QWidget):
 
         ax.set_title(
             f"All Cycles Combined — Particles per Frame  "
-            f"(lead-in {g1}f excluded; cycle = {label2} {g2}f + skip{skip}f "
-            f"+ {label1} {g1}f + skip{skip}f)"
+            f"(lead-in {g1}f excluded; cycle = {label1} {g1}f + skip{skip}f "
+            f"+ {label2} {g2}f + skip{skip}f)"
         )
         ax.set_xlabel("Time (frame)")
         ax.set_ylabel("Number of Particles")
@@ -378,7 +415,8 @@ class PAPAWidget(QWidget):
         ax.grid(alpha=0.3)
         self._style_figure(fig)
 
-    def _render_ratio_plot(self, fig, per_cycle, label1, label2):
+    def _render_ratio_plot(self, fig, per_cycle, label1, label2,
+                           frame_fraction=1.0):
         fig.clear()
         if len(per_cycle) == 0:
             ax = fig.add_subplot(111)
@@ -412,17 +450,26 @@ class PAPAWidget(QWidget):
         ax1.legend(fontsize=8)
         ax1.grid(axis="y", alpha=0.3)
 
+        # A sub-block ratio window must be visible on the plot, or the bars
+        # cannot be read correctly against the counts above them.
+        window = ("" if frame_fraction >= 1
+                  else f"  [first {frame_fraction:g} of each block]")
+
         ax2.bar(x, ratios_g1_g2, 0.5, color="tab:green")
         ax2.axhline(y=1.0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
         ax2.set_ylabel(f"Ratio ({label1} / {label2})")
-        ax2.set_title(f"Particle Count Ratio ({label1} / {label2}) per Cycle")
+        ax2.set_title(
+            f"Particle Count Ratio ({label1} / {label2}) per Cycle{window}"
+        )
         ax2.grid(axis="y", alpha=0.3)
 
         ax3.bar(x, ratios_g2_g1, 0.5, color="tab:red")
         ax3.axhline(y=1.0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
         ax3.set_ylabel(f"Ratio ({label2} / {label1})")
         ax3.set_xlabel("Cycle")
-        ax3.set_title(f"Particle Count Ratio ({label2} / {label1}) per Cycle")
+        ax3.set_title(
+            f"Particle Count Ratio ({label2} / {label1}) per Cycle{window}"
+        )
         ax3.set_xticks(x)
         ax3.set_xticklabels([str(c) for c in cycles])
         ax3.grid(axis="y", alpha=0.3)

@@ -31,6 +31,7 @@ class TestPAPAWidgetConstruction:
         assert widget._group1_size.text() == "5"
         assert widget._group2_size.text() == "5"
         assert widget._skip_frames.text() == "1"
+        assert widget._ratio_frame_fraction.text() == "1.0"
         assert widget._label_group1.text() == "DR"
         assert widget._label_group2.text() == "PAPA"
 
@@ -139,6 +140,15 @@ class TestPAPAWidgetValidation:
         widget._plot_btn.click()
         assert "group 2 size" in widget._status_label.text().lower()
 
+    @pytest.mark.parametrize("bad", ["", "0", "1.5", "-0.2", "abc"])
+    def test_invalid_ratio_frame_fraction_rejected(self, papa_widget, bad):
+        widget, viewer = papa_widget
+        viewer.add_points(np.array([[0, 10.0, 20.0]]), name="spots")
+        # Bypass the validator (which prevents typing these) by setText.
+        widget._ratio_frame_fraction.setText(bad)
+        widget._plot_btn.click()
+        assert "ratio frame fraction" in widget._status_label.text().lower()
+
 
 class TestPAPAWidgetPlotPipeline:
     # The default 5/5/1 pattern needs 5 + 1 + 5 + 1 + 5 = 17 frames for one
@@ -151,6 +161,43 @@ class TestPAPAWidgetPlotPipeline:
             for _ in range(spots_per_frame):
                 rows.append([f, rng.uniform(0, 100), rng.uniform(0, 100)])
         viewer.add_points(np.array(rows), name="spots")
+
+    def _make_ramped_layer(self, viewer):
+        """Spots ramping 1..5 across cycle 1's G1, flat 2 across its G2.
+
+        Layer frames are 0-indexed, so cycle 1's G1 (frames 7-11 one-indexed)
+        is layer frames 6-10 and its G2 (13-17) is layer frames 12-16.
+        """
+        rows = []
+        for i, f in enumerate(range(6, 11)):
+            rows += [[f, 10.0, 10.0]] * (i + 1)
+        for f in range(12, 17):
+            rows += [[f, 10.0, 10.0]] * 2
+        viewer.add_points(np.array(rows), name="spots")
+
+    def test_ratio_frame_fraction_narrows_the_ratio_window(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_ramped_layer(viewer)
+        widget._ratio_frame_fraction.setText("0.4")  # first 2 of 5 frames
+        widget._plot_btn.click()
+
+        row = widget._last_per_cycle_df.iloc[0]
+        assert int(row["DR_ratio_count"]) == 3      # frames 7-8 -> 1 + 2
+        assert int(row["PAPA_ratio_count"]) == 4    # frames 13-14 -> 2 + 2
+        assert row["PAPA_over_DR"] == pytest.approx(4 / 3)
+        # Displayed totals stay whole-block.
+        assert int(row["DR_count"]) == 15
+        assert int(row["PAPA_count"]) == 10
+
+    def test_default_fraction_uses_whole_block(self, papa_widget):
+        widget, viewer = papa_widget
+        self._make_ramped_layer(viewer)
+        widget._plot_btn.click()
+
+        row = widget._last_per_cycle_df.iloc[0]
+        assert int(row["DR_ratio_count"]) == 15
+        assert int(row["PAPA_ratio_count"]) == 10
+        assert row["PAPA_over_DR"] == pytest.approx(10 / 15)
 
     def test_plot_renders_combined_axes(self, papa_widget):
         widget, viewer = papa_widget
@@ -175,13 +222,13 @@ class TestPAPAWidgetPlotPipeline:
         self._make_synthetic_layer(viewer, n_frames=17)
         widget._plot_btn.click()
         df = widget._last_per_frame_df
-        # Frames 1-5 are the excluded lead-in; 7-11 are cycle 1 group 2 and
-        # 13-17 are cycle 1 group 1.
+        # Frames 1-5 are the excluded lead-in; 7-11 are cycle 1 group 1 and
+        # 13-17 are cycle 1 group 2. The block after the lead-in is group 1.
         lead_in = df[df["frame"].between(1, 5)]
         assert lead_in["cycle"].isna().all()
         assert lead_in["group"].isna().all()
-        assert df.loc[df["frame"] == 9, "group"].tolist() == [2]
-        assert df.loc[df["frame"] == 15, "group"].tolist() == [1]
+        assert df.loc[df["frame"] == 9, "group"].tolist() == [1]
+        assert df.loc[df["frame"] == 15, "group"].tolist() == [2]
 
     def test_plot_status_message(self, papa_widget):
         widget, viewer = papa_widget

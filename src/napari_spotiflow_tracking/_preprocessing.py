@@ -15,6 +15,33 @@ def _get_device(use_gpu: bool = False) -> str:
     return "cpu"
 
 
+def _rebaseline(residual: np.ndarray, original: np.ndarray) -> np.ndarray:
+    """Shift a zero-centred residual onto the original's mean, in its dtype.
+
+    Subtracting the low-pass background leaves the result centred on zero, so
+    roughly half of it is negative. Adding the original mean back puts the
+    signal on a positive baseline again.
+
+    Integer dtypes are clipped to their representable range before the cast:
+    a residual of -3 written straight into ``uint16`` wraps to 65533, turning
+    the darkest pixels into the brightest in the frame. Floats are cast
+    without clipping, so they keep their sign.
+    """
+    out = residual + float(np.mean(original))
+    if np.issubdtype(original.dtype, np.integer):
+        info = np.iinfo(original.dtype)
+        out = np.clip(out, info.min, info.max)
+    return out.astype(original.dtype)
+
+
+def _rebaseline_stack(residual: np.ndarray, original: np.ndarray) -> np.ndarray:
+    """Per-frame :func:`_rebaseline`, so a stack matches frame-by-frame 2D."""
+    out = np.empty(original.shape, dtype=original.dtype)
+    for t in range(original.shape[0]):
+        out[t] = _rebaseline(residual[t], original[t])
+    return out
+
+
 def remove_background_high_pass(
     image: np.ndarray,
     sigma: float = 10.0,
@@ -26,6 +53,9 @@ def remove_background_high_pass(
     BackgroundRemover) for GPU acceleration. Falls back to scipy on CPU
     when torch is not available.
 
+    The subtraction leaves the result centred on zero, so the image's own mean
+    is added back to return it to a positive baseline (see :func:`_rebaseline`).
+
     Args:
         image: 2D image (Y, X).
         sigma: standard deviation of the Gaussian filter. Larger values
@@ -33,7 +63,9 @@ def remove_background_high_pass(
         device: 'cuda' for GPU, 'cpu' for CPU.
 
     Returns:
-        Background-subtracted image (float64).
+        Background-subtracted image, re-baselined on the input mean and cast
+        back to the input dtype. Integer results are clipped to the dtype's
+        range.
     """
     try:
         import torch
@@ -42,7 +74,7 @@ def remove_background_high_pass(
     except ImportError:
         from scipy.ndimage import gaussian_filter
         background = gaussian_filter(image.astype(np.float64), sigma=sigma)
-        return image.astype(np.float64) - background
+        return _rebaseline(image.astype(np.float64) - background, image)
 
 
 def _remove_background_torch(image, sigma, device, torch, F):
@@ -72,7 +104,8 @@ def _remove_background_torch(image, sigma, device, torch, F):
     y = F.conv2d(y, weight=wx, stride=1, padding="valid")
     result = x - y
 
-    return result.squeeze().cpu().numpy().astype(np.float64)
+    residual = result.squeeze().cpu().numpy().astype(np.float64)
+    return _rebaseline(residual, image)
 
 
 def remove_background_high_pass_stack(
@@ -91,7 +124,9 @@ def remove_background_high_pass_stack(
         device: 'cuda' or 'cpu'.
 
     Returns:
-        Background-subtracted stack (float64).
+        Background-subtracted stack, each frame re-baselined on its own mean
+        and cast back to the input dtype — so the result matches applying
+        :func:`remove_background_high_pass` to each frame in turn.
     """
     if image_stack.ndim != 3:
         raise ValueError(f"Expected 3D (T,Y,X) stack, got {image_stack.ndim}D")
@@ -102,11 +137,11 @@ def remove_background_high_pass_stack(
         return _remove_background_stack_torch(image_stack, sigma, device, torch, F)
     except ImportError:
         from scipy.ndimage import gaussian_filter
-        result = np.empty_like(image_stack, dtype=np.float64)
+        residual = np.empty(image_stack.shape, dtype=np.float64)
         for t in range(image_stack.shape[0]):
             bg = gaussian_filter(image_stack[t].astype(np.float64), sigma=sigma)
-            result[t] = image_stack[t].astype(np.float64) - bg
-        return result
+            residual[t] = image_stack[t].astype(np.float64) - bg
+        return _rebaseline_stack(residual, image_stack)
 
 
 def _remove_background_stack_torch(image_stack, sigma, device, torch, F):
@@ -141,8 +176,8 @@ def _remove_background_stack_torch(image_stack, sigma, device, torch, F):
         y = F.conv2d(y, weight=wx, stride=1, padding="valid")
         results.append((batch - y).cpu())
 
-    result = torch.cat(results, dim=0).squeeze(1).numpy().astype(np.float64)
-    return result
+    residual = torch.cat(results, dim=0).squeeze(1).numpy().astype(np.float64)
+    return _rebaseline_stack(residual, image_stack)
 
 
 # ── Morphological erosion/reconstruction background removal ──────────
@@ -366,13 +401,13 @@ def gaussian_blur(image: np.ndarray, sigma: float) -> np.ndarray:
     if sigma <= 0:
         return image
     if image.ndim == 2:
-        return gaussian_filter(image.astype(np.float64), sigma=sigma)
+        return gaussian_filter(image.astype(np.float64), sigma=sigma).astype(image.dtype)
     if image.ndim == 3:
         frames = [
             gaussian_filter(image[t].astype(np.float64), sigma=sigma)
             for t in range(image.shape[0])
         ]
-        return np.stack(frames, axis=0)
+        return np.stack(frames, axis=0).astype(image.dtype)
     raise ValueError(f"Expected 2D (Y,X) or 3D (T,Y,X) image, got {image.ndim}D")
 
 

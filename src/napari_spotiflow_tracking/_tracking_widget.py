@@ -39,6 +39,7 @@ class TrackingWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self._last_tracked_df: pd.DataFrame | None = None
+        self._current_track_id: int | None = None
         self._setup_ui()
         self._connect_events()
 
@@ -143,6 +144,7 @@ class TrackingWidget(QWidget):
 
         # === Analysis tab ===========================================
         self._build_analysis_tab()
+        self._refresh_tracks_combo()
 
     def _build_analysis_tab(self):
         analysis_tab = QWidget()
@@ -157,6 +159,22 @@ class TrackingWidget(QWidget):
         layout = QVBoxLayout()
         inner.setLayout(layout)
         scroll.setWidget(inner)
+
+        # Which Tracks layer the charts below read. A live tracking run and a
+        # tracks CSV opened through the reader both land here, so the analysis
+        # never has to guess which layer it is looking at.
+        tracks_row = QHBoxLayout()
+        tracks_row.addWidget(QLabel("Tracks layer:"))
+        self._tracks_combo = QComboBox()
+        self._tracks_combo.setToolTip(
+            "Tracks layers carrying per-vertex data — produced by Run Tracking, "
+            "or opened from a tracks CSV."
+        )
+        self._tracks_combo.currentIndexChanged.connect(
+            self._on_tracks_layer_changed
+        )
+        tracks_row.addWidget(self._tracks_combo)
+        layout.addLayout(tracks_row)
 
         # Filtered rows table — re-parented from the FilterPanel.
         layout.addWidget(QLabel("Filtered rows:"))
@@ -246,9 +264,6 @@ class TrackingWidget(QWidget):
         )
         layout.addWidget(self._intensity_toolbar)
         layout.addWidget(self._intensity_canvas)
-
-        # Cache for the currently-displayed track id.
-        self._current_track_id: int | None = None
 
         # Subscribe to row-click selection on the filter panel's table.
         self._filter_panel.selectionChanged.connect(
@@ -341,13 +356,10 @@ class TrackingWidget(QWidget):
 
     def _get_track_subdf(self, track_id: int):
         """Return the chronological per-vertex DataFrame for a track."""
-        layers = [
-            l for l in self.viewer.layers
-            if l.name == "Tracked Spots"
-        ]
-        if not layers:
+        layer = self._tracks_layer()
+        if layer is None:
             return None
-        meta_df = layers[0].metadata.get("tracked_df")
+        meta_df = layer.metadata.get("tracked_df")
         if not isinstance(meta_df, pd.DataFrame):
             return None
         sub = meta_df[meta_df["particle"] == int(track_id)].sort_values("frame")
@@ -509,6 +521,12 @@ class TrackingWidget(QWidget):
     def _on_layer_change(self, event=None):
         self._refresh_points_combo()
         self._refresh_image_combo()
+        # A Tracks layer that just arrived — a CSV opened through the reader,
+        # say — is what the user means to look at, so select it.
+        added = getattr(event, "value", None) if event is not None else None
+        select = (added.name
+                  if isinstance(added, napari.layers.Tracks) else None)
+        self._refresh_tracks_combo(select=select)
 
     def _refresh_points_combo(self):
         prev = self._points_combo.currentText()
@@ -519,6 +537,42 @@ class TrackingWidget(QWidget):
         idx = self._points_combo.findText(prev)
         if idx >= 0:
             self._points_combo.setCurrentIndex(idx)
+
+    def _refresh_tracks_combo(self, select: str | None = None):
+        """List every Tracks layer that carries a per-vertex ``tracked_df``.
+
+        ``select`` names the layer to show — used when a run or an opened file
+        has just produced one. Otherwise the current selection is kept when it
+        survives, falling back to the most recently added layer.
+        """
+        prev = self._tracks_combo.currentText()
+        self._tracks_combo.blockSignals(True)
+        self._tracks_combo.clear()
+        for layer in self.viewer.layers:
+            if (isinstance(layer, napari.layers.Tracks)
+                    and isinstance(layer.metadata.get("tracked_df"),
+                                   pd.DataFrame)):
+                self._tracks_combo.addItem(layer.name)
+        idx = self._tracks_combo.findText(select or prev)
+        self._tracks_combo.setCurrentIndex(
+            idx if idx >= 0 else self._tracks_combo.count() - 1
+        )
+        self._tracks_combo.blockSignals(False)
+        self._on_tracks_layer_changed()
+
+    def _on_tracks_layer_changed(self, *_):
+        """Re-point the per-track charts at the newly selected layer."""
+        self._current_track_id = None
+        self._refresh_per_track_charts()
+
+    def _tracks_layer(self):
+        """The Tracks layer the analysis reads, or None."""
+        name = self._tracks_combo.currentText()
+        if name and name in self.viewer.layers:
+            layer = self.viewer.layers[name]
+            if isinstance(layer, napari.layers.Tracks):
+                return layer
+        return None
 
     def _refresh_image_combo(self):
         prev = self._image_combo.currentText()
@@ -605,12 +659,13 @@ class TrackingWidget(QWidget):
                     "intensity time series will be unavailable."
                 )
 
-        self.viewer.add_tracks(
+        layer = self.viewer.add_tracks(
             tracks_array,
             name="Tracked Spots",
             metadata={"properties": track_props, "tracked_df": tracked_df},
         )
 
+        self._refresh_tracks_combo(select=layer.name)
         self._last_tracked_df = tracked_df
         self._export_btn.setEnabled(True)
         self._export_analysis_btn.setEnabled(True)

@@ -24,30 +24,47 @@ The widget has two tabs: **Input** (configuration) and **Plots** (results).
 
 !!! warning "Changed 2026-07-30"
 
-    Output produced before this date paired each group-2 readout with the
-    group-1 readout **preceding** it, and clipped a trailing incomplete cycle
+    Output produced before this date treated the opening block as cycle 1's
+    group 1 instead of excluding it, and clipped a trailing incomplete cycle
     instead of dropping it. Per-cycle CSVs and ratio graphs from before and
     after this change are **not comparable** — the cycle numbering and column
     names are identical, so the files cannot be told apart by inspection.
 
 Define how frames repeat. The **first `Group 1 size` frames are a lead-in** —
 readout that precedes the first reactivation pulse — and belong to no cycle.
-Cycle 1 starts at the block after that, so a cycle runs
-`G2 → (skip) → G1 → (skip)`: each group-2 readout is paired with the group-1
-readout that **follows** it.
+The pattern then starts fresh, so cycle 1 opens with a group-1 block and a
+cycle runs `G1 → (skip) → G2 → (skip)`.
 
 | Field | Notes |
 |---|---|
-| **Group 1 size** | Number of frames in group 1 per cycle. Also the length of the excluded lead-in. |
+| **Group 1 size** | Number of frames in group 1 per cycle. Also the length of the excluded lead-in, which is why the first two blocks are the same length. |
 | **Group 2 size** | Number of frames in group 2 per cycle. |
-| **Skip frames** | Number of frames between blocks that are excluded from both groups (e.g. shutter / settling frames). This is the pulse that starts a cycle. |
+| **Skip frames** | Number of frames between blocks that are excluded from both groups — the reactivation pulse and any shutter / settling frames. |
+| **Ratio frame fraction** | Fraction of each block, from `0` (exclusive) to `1`, used when computing the ratios. Default `1.0` — the whole block. |
 
-Group identity follows the block alternation from frame 1 and never moves: a
-`Group 1 size`-length block is always group 1, a `Group 2 size`-length block
-always group 2. No block is ever re-sliced.
+A `Group 1 size`-length block is always group 1 and a `Group 2 size`-length
+block always group 2, so no block is ever re-sliced.
+
+#### Ratio frame fraction
+
+Counts within a block are not flat: they peak at the reactivation pulse and
+decay across the block. **Ratio frame fraction** narrows the ratio to the
+**first** that fraction of each block — `0.25` of a 200-frame block counts
+frames 1–50 — so the ratio reflects the reactivation response rather than the
+settled tail.
+
+It applies **only to the ratio**. The particles-per-frame trace and the
+`_count` totals always use every frame, so nothing you see plotted as a count
+changes when you adjust it. The counts the ratio was actually computed from are
+exported separately as `_ratio_count`, so any ratio in the CSV can be checked
+against its own inputs.
+
+The window is rounded to the nearest whole frame with a floor of one, so a very
+small fraction degrades to a single frame rather than to an empty window. A
+value of `0` is rejected: it would count nothing and make every ratio `NaN`.
 
 The stack must be at least
-`Group 1 size + Skip + Group 2 size + Skip + Group 1 size` frames long — the
+`Group 1 size + Skip + Group 1 size + Skip + Group 2 size` frames long — the
 excluded lead-in plus one cycle — with `G1=10, G2=10, Skip=2` that is 34.
 **Incomplete cycles are not reported:** both of a cycle's blocks must fit
 entirely within the stack, so a trailing block with no partner is dropped
@@ -96,6 +113,6 @@ Four stacked figures, each with the matplotlib navigation toolbar:
 
 | Output | Type |
 |---|---|
-| **CSV export** | `papa_per_frame.csv` — one row per frame with `frame`, `n_particles`, `cycle`, `group`; lead-in and skip frames carry an empty `cycle`/`group`. `papa_per_cycle.csv` — one row per complete cycle with per-group counts and both ratios. |
+| **CSV export** | `papa_per_frame.csv` — one row per frame with `frame`, `n_particles`, `cycle`, `group`; lead-in and skip frames carry an empty `cycle`/`group`. `papa_per_cycle.csv` — one row per complete cycle with per-group whole-block counts (`<label>_count`), the counts the ratios were computed from (`<label>_ratio_count`, equal to the totals unless **Ratio frame fraction** is below 1), and both ratios. |
 
 PAPA does **not** add any new napari layers — it's a pure analysis widget.

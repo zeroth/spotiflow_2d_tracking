@@ -14,6 +14,15 @@ contributions:
     - id: napari-spotiflow-tracking.papa_widget
       python_name: napari_spotiflow_tracking._papa_widget:PAPAWidget
       title: PAPA
+    - id: napari-spotiflow-tracking.read_tracks_csv
+      python_name: napari_spotiflow_tracking._reader:get_reader
+      title: Read a tracks CSV as a Tracks layer
+  readers:
+    # Claims only CSVs that carry frame/y/x plus particle (or track_id); any
+    # other CSV is declined so napari's builtin reader still handles it.
+    - command: napari-spotiflow-tracking.read_tracks_csv
+      filename_patterns: ['*.csv']
+      accepts_directories: false
   widgets:
     - command: napari-spotiflow-tracking.preprocessing_widget
       display_name: Pre-Processing

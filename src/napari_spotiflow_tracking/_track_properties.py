@@ -8,6 +8,32 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+# Motility classification thresholds on the anomalous-diffusion exponent α,
+# after Nature Communications Biology 4, 137 (2021), "Motility analysis":
+# α < 0.4 constrained, 0.4 < α < 1.2 diffusive, α > 1.2 directed.
+# The exact boundary values are assigned to "diffusive".
+ALPHA_CONSTRAINED_MAX = 0.4
+ALPHA_DIRECTED_MIN = 1.2
+MOTILITY_CLASSES = ("constrained", "diffusive", "directed")
+
+
+def classify_motility(alpha) -> str:
+    """Bin an anomalous-diffusion exponent into a motility class.
+
+    Returns one of :data:`MOTILITY_CLASSES`, or ``"unclassified"`` when
+    ``alpha`` is None/NaN (e.g. a track whose MSD fit did not converge).
+    """
+    if alpha is None:
+        return "unclassified"
+    a = float(alpha)
+    if not np.isfinite(a):
+        return "unclassified"
+    if a < ALPHA_CONSTRAINED_MAX:
+        return "constrained"
+    if a > ALPHA_DIRECTED_MIN:
+        return "directed"
+    return "diffusive"
+
 
 def compute_track_properties(
     tracked_df: pd.DataFrame,
@@ -72,6 +98,45 @@ def compute_track_properties(
     return pd.DataFrame(rows, columns=cols).sort_values("track_id").reset_index(drop=True)
 
 
+def add_physical_columns(
+    df: pd.DataFrame,
+    pixel_size_nm: float | None = None,
+    frame_interval_s: float | None = None,
+) -> pd.DataFrame:
+    """Append calibrated copies of the geometry columns to a track table.
+
+    ``compute_track_properties`` works in the units napari uses -- pixels and
+    frames. This adds ``duration_s``, ``total_displacement_um``,
+    ``net_displacement_um`` and ``mean_speed_um_s`` beside them, leaving the
+    pixel columns alone: the bulk script's ``--summary-only`` and ``--compare``
+    paths read those back and scale them themselves, so changing their meaning
+    would double-convert, and ``length`` in frames is what
+    ``--min-track-length`` cuts on.
+
+    Both parameters are needed. Half a calibration is no calibration -- a µm
+    column derived from a missing pixel size would be pixels wearing the wrong
+    label -- so anything less returns ``df`` unchanged.
+
+    A track's duration spans the intervals *between* its localisations, so an
+    n-frame track lasts ``(n - 1) * frame_interval_s``. A single-frame track
+    therefore has zero duration and an undefined speed (NaN rather than an
+    infinity, which would otherwise own every axis limit downstream).
+    """
+    if pixel_size_nm is None or frame_interval_s is None:
+        return df
+
+    out = df.copy()
+    um_per_px = pixel_size_nm / 1000.0
+    duration = (out["length"].astype(float) - 1.0) * float(frame_interval_s)
+    out["duration_s"] = duration
+    out["total_displacement_um"] = out["total_displacement"].astype(float) * um_per_px
+    out["net_displacement_um"] = out["net_displacement"].astype(float) * um_per_px
+    out["mean_speed_um_s"] = (
+        out["total_displacement_um"] / duration.where(duration > 0)
+    )
+    return out
+
+
 def msd(pos: np.ndarray, limit: int = 25) -> pd.Series:
     """Mean squared displacement for a single track.
 
@@ -110,12 +175,64 @@ def msd(pos: np.ndarray, limit: int = 25) -> pd.Series:
     return result["msd"]
 
 
+def msd_stats(pos: np.ndarray, limit: int = 25) -> pd.DataFrame:
+    """Per-lag MSD with its spread and pair count, for MSD error bars.
+
+    Same mean as :func:`msd`, plus the standard error and the number of
+    displacement pairs averaged at each lag.
+
+    Parameters
+    ----------
+    pos : np.ndarray of shape (N, 2)
+        Per-frame [x, y] coordinates of one track, in chronological order.
+    limit : int
+        Maximum lag time (clipped to ``N - 1``).
+
+    Returns
+    -------
+    pd.DataFrame indexed by lag time (1..limit) with columns ``msd``, ``sem``
+    and ``n_pairs``. ``sem`` is NaN where only one pair contributes.
+
+    Notes
+    -----
+    ``sem`` is the conventional standard error over displacements, but those
+    displacements overlap in time and are therefore correlated — so it
+    understates the true uncertainty, increasingly so at long lags. Treat the
+    error bars as indicative rather than as confidence intervals.
+    """
+    if pos.ndim != 2 or pos.shape[1] != 2:
+        raise ValueError("pos must have shape (N, 2)")
+    if pos.shape[0] < 2:
+        raise ValueError("pos must have at least 2 rows")
+
+    limit = min(limit, pos.shape[0] - 1)
+    lagtimes = np.arange(1, limit + 1)
+    means, sems, counts = [], [], []
+    for lt in lagtimes:
+        diff = pos[lt:] - pos[:-lt]
+        squared = np.nansum(diff ** 2, axis=1)  # |Δr|² per displacement pair
+        n = int(np.count_nonzero(~np.isnan(squared)))
+        means.append(float(np.nanmean(squared)))
+        counts.append(n)
+        sems.append(float(np.nanstd(squared, ddof=1) / np.sqrt(n)) if n > 1
+                    else float("nan"))
+
+    return pd.DataFrame(
+        {"msd": means, "sem": sems, "n_pairs": counts}, index=lagtimes,
+    )
+
+
 def msd_basic_fit(
     msd_series: pd.Series,
     delta: float = 1.0,
+    sigma: float = 0.0,
     maxfev: int = 1_000_000,
 ) -> dict:
-    """Fit the anomalous-diffusion model ``msd = 4 * D * t^alpha`` to an MSD curve.
+    """Fit the anomalous-diffusion model to an MSD curve.
+
+    The model is ``msd = 4 * D * t^alpha + 4 * sigma^2``, where the constant
+    term is the static localization-error floor. With the default
+    ``sigma=0`` this reduces to the plain ``4 * D * t^alpha``.
 
     Parameters
     ----------
@@ -124,6 +241,11 @@ def msd_basic_fit(
     delta : float
         Real-world time per frame (e.g. seconds). Default 1.0 keeps lag in
         frames so D has units of px²/frame^alpha and alpha is unitless.
+    sigma : float
+        Fixed (not fitted) localization error, in the same length units as
+        the coordinates the MSD was computed from. Only meaningful when the
+        coordinates are calibrated — e.g. 0.035 µm for the 35 nm figure in
+        Nature Communications Biology 4, 137 (2021).
     maxfev : int
         Maximum function evaluations for ``scipy.optimize.curve_fit``.
 
@@ -144,9 +266,10 @@ def msd_basic_fit(
         raise ValueError("Need at least 2 finite MSD values to fit")
 
     x = np.arange(1, len(y) + 1, dtype=float) * float(delta)
+    offset = 4.0 * float(sigma) ** 2
 
     def _fit_function(t, d, alfa):
-        return (4.0 * d) * np.power(t, alfa)
+        return (4.0 * d) * np.power(t, alfa) + offset
 
     best_value, _ = curve_fit(
         _fit_function, x, y, p0=np.array([0.001, 0.01]), maxfev=maxfev,

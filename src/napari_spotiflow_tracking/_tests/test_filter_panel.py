@@ -518,6 +518,54 @@ class TestSiblingLayerTracks:
         assert len(sibling.data) == 3
         assert all(row[0] == 2 for row in sibling.data)
 
+    def test_filter_by_max_intensity(self, filter_panel_tracks):
+        panel, viewer = filter_panel_tracks
+        tracked_df = pd.DataFrame({
+            "frame": [0, 1, 0, 1, 2],
+            "y": [0.0, 0.0, 5.0, 5.0, 5.0],
+            "x": [0.0, 0.0, 5.0, 5.0, 5.0],
+            "particle": [1, 1, 2, 2, 2],
+        })
+        meta_df = pd.DataFrame({
+            "track_id": [1, 2],
+            "length": [2, 3],
+            "mean_intensity": [10.0, 80.0],
+            "max_intensity": [20.0, 100.0],
+        })
+        self._add_tracks_with_props(viewer, "t", tracked_df, meta_df)
+        panel._on_layer_changed("t")
+        panel._show_filtered_cb.setChecked(True)
+        # Keep only the dim track (max_intensity 20) -> track 1, 2 vertices
+        panel._sliders["max_intensity"].setValue((20.0, 50.0))
+        panel._refresh()
+        sibling = viewer.layers["t (filtered)"]
+        assert len(sibling.data) == 2
+        assert all(row[0] == 1 for row in sibling.data)
+
+    def test_filter_by_mean_intensity(self, filter_panel_tracks):
+        panel, viewer = filter_panel_tracks
+        tracked_df = pd.DataFrame({
+            "frame": [0, 1, 0, 1, 2],
+            "y": [0.0, 0.0, 5.0, 5.0, 5.0],
+            "x": [0.0, 0.0, 5.0, 5.0, 5.0],
+            "particle": [1, 1, 2, 2, 2],
+        })
+        meta_df = pd.DataFrame({
+            "track_id": [1, 2],
+            "length": [2, 3],
+            "mean_intensity": [10.0, 80.0],
+            "max_intensity": [20.0, 100.0],
+        })
+        self._add_tracks_with_props(viewer, "t", tracked_df, meta_df)
+        panel._on_layer_changed("t")
+        panel._show_filtered_cb.setChecked(True)
+        # Keep only the bright track (mean_intensity 80) -> track 2, 3 vertices
+        panel._sliders["mean_intensity"].setValue((50.0, 80.0))
+        panel._refresh()
+        sibling = viewer.layers["t (filtered)"]
+        assert len(sibling.data) == 3
+        assert all(row[0] == 2 for row in sibling.data)
+
 
 class TestHistogramWhitelist:
     def test_points_panel_has_checkbox_for_each_whitelisted_property(self, filter_panel_points):
@@ -539,6 +587,7 @@ class TestHistogramWhitelist:
         df = pd.DataFrame({
             "track_id": [0, 1],
             "length": [10, 20],
+            "mean_speed": [1.0, 2.0],
             "mean_intensity": [50.0, 60.0],
             "max_intensity": [100.0, 200.0],
         })
@@ -546,9 +595,11 @@ class TestHistogramWhitelist:
         layer = viewer.add_tracks(tracks_data, name="t")
         layer.metadata["properties"] = df
         panel._on_layer_changed("t")
-        # Tracks filter whitelist is narrowed to just `length`, so only
-        # length gets a slider and a histogram checkbox.
-        assert set(panel._sliders.keys()) == {"length"}
+        # Tracks are filterable by length and the two intensity stats, but
+        # only length is histogrammed.
+        assert set(panel._sliders.keys()) == {
+            "length", "mean_intensity", "max_intensity",
+        }
         assert set(panel._hist_checkboxes.keys()) == {"length"}
 
     def test_tracks_histogram_uses_raw_values(self, filter_panel_tracks):
