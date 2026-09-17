@@ -1,0 +1,14 @@
+# Photobleaching-step preset: settings of scripts/bleaching_trace_analysis.py.
+preprocessing:
+  steps:
+    - subtract: {value: mean}
+    - gaussian_blur: {sigma: 1.0}
+detection:
+  method: spotiflow
+  spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}
+tracking:
+  enabled: true
+  search_range: 3.0
+  memory: 10
+  min_track_length: 10
+measure_on: raw

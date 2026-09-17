@@ -18,6 +18,8 @@ dependencies = [
     "matplotlib",
     "scikit-image",
     "scipy",
+    "pyyaml",
+    "tifffile",
 ]
 
 [project.optional-dependencies]
@@ -36,11 +38,14 @@ dev = [
 [project.entry-points."napari.manifest"]
 napari-spotiflow-tracking = "napari_spotiflow_tracking:napari.yaml"
 
+[project.scripts]
+spotiflow-batch = "napari_spotiflow_tracking.batch.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-napari_spotiflow_tracking = ["napari.yaml"]
+napari_spotiflow_tracking = ["napari.yaml", "batch/presets/*.yaml"]
 
 # [tool.setuptools_scm]
 

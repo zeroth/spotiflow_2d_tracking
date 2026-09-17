@@ -1,0 +1,14 @@
+# Tracking / MSD preset: the defaults of scripts/bulk_track_analysis.py.
+preprocessing:
+  steps:
+    - walking_average: {window: 4}
+    - subtract: {value: mean}
+    - gaussian_blur: {sigma: 1.0}
+detection:
+  method: spotiflow
+  spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}
+tracking:
+  enabled: true
+  search_range: 5.0
+  memory: 3
+  min_track_length: 5
