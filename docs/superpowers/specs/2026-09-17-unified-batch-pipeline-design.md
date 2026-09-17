@@ -101,10 +101,26 @@ class Analysis(Protocol):
     default_measure_on: str                    # "raw" | "preprocessed" | "none"
     catalogue: list[OutputSpec]                # name, level, kind, description
 
-    def run_movie(self, ctx: MovieContext, cfg) -> dict: ...          # summary record
-    def summarize_group(self, group: str, movie_dirs: list[Path], cfg, out: Path) -> None: ...
-    def compare_groups(self, groups: dict[str, list[Path]], cfg, out: Path) -> None: ...
+    def validate(self, settings: dict) -> list[str]: ...          # problems, as strings
+    def run_movie(self, ctx: MovieContext, settings: dict, select: OutputSelector) -> dict: ...  # summary record
+    def summarize_group(self, group: str, movie_dirs: list[Path], settings: dict,
+                        select: OutputSelector, out_dir: Path, cfg: PipelineConfig) -> None: ...
+    def compare_groups(self, groups: dict[str, list[Path]], settings: dict,
+                       select: OutputSelector, out_dir: Path, cfg: PipelineConfig) -> None: ...
 ```
+
+`settings` is the analysis section merged over `default_settings()` (with
+`enabled` removed); `select` answers which catalogue figures/tables the user
+asked for. Group and comparison hooks also get the whole `cfg` for
+`outputs.formats`/`dpi`, `calibration` and group colours; groups whose movies
+all failed are left out (with a logged warning), so hooks take colours from
+`theme.group_colors([input_label(s) for s in cfg.inputs], color_pins(cfg))`
+to keep palette slots stable.
+
+`measure_on_for(analysis, settings, cfg)` resolves the movie an analysis
+samples: `None` when `default_measure_on == "none"`, else
+`analyses.<name>.measure_on` when set, else the top-level `measure_on`.
+Validation rejects an `analyses.<name>.measure_on` other than raw/preprocessed.
 
 `OutputSpec(name, level: movie|group|comparison, kind: figure|table, description)`.
 Group and comparison hooks read the per-movie tables from disk, so they also
