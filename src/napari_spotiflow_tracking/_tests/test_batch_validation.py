@@ -2,7 +2,12 @@
 import pytest
 
 from napari_spotiflow_tracking.batch import analyses
-from napari_spotiflow_tracking.batch.analyses import Analysis, enabled_analyses, register
+from napari_spotiflow_tracking.batch.analyses import (
+    Analysis,
+    enabled_analyses,
+    measure_on_for,
+    register,
+)
 from napari_spotiflow_tracking.batch.config import ConfigError, ConfigWarning, load_config
 from napari_spotiflow_tracking.batch.outputs import OutputSpec
 from napari_spotiflow_tracking.batch.validation import validate
@@ -99,3 +104,25 @@ def test_fit_needs_torchimize(monkeypatch):
 def test_analysis_section_must_be_mapping(demo):
     with pytest.raises(ConfigError, match="analyses.demo must be a mapping"):
         validate(_cfg(analyses={"demo": [1, 2]}))
+
+
+def test_measure_on_for_resolution_order(demo):
+    cfg = _cfg(measure_on="preprocessed")
+    assert measure_on_for(demo, {}, cfg) == "preprocessed"
+    assert measure_on_for(demo, {"measure_on": "raw"}, cfg) == "raw"
+    assert measure_on_for(demo, {"measure_on": None}, cfg) == "preprocessed"
+
+    class Blind(Analysis):
+        name = "blind"
+        default_measure_on = "none"
+
+    assert measure_on_for(Blind(), {"measure_on": "raw"}, cfg) is None
+
+
+def test_analysis_measure_on_is_validated(demo):
+    with pytest.raises(ConfigError, match="analyses.demo.measure_on must be raw or preprocessed"):
+        validate(_cfg(analyses={"demo": {"measure_on": "denoised"}}))
+    validate(_cfg(tracking={"enabled": True},
+                  analyses={"demo": {"measure_on": "preprocessed"}}))
+    # a disabled analysis is not checked
+    validate(_cfg(analyses={"demo": {"enabled": False, "measure_on": "denoised"}}))

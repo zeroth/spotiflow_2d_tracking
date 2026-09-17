@@ -59,6 +59,22 @@ def settings_for(analysis: Analysis, section) -> dict:
     return deep_merge(analysis.default_settings(), section or {})
 
 
+def measure_on_for(analysis: Analysis, settings: dict, cfg: PipelineConfig) -> Optional[str]:
+    """The movie an analysis reads intensities from: ``"raw"``, ``"preprocessed"`` or None.
+
+    Resolution order:
+
+    1. ``None`` when ``analysis.default_measure_on == "none"`` (the analysis reads
+       no intensities, so any setting is ignored);
+    2. ``settings["measure_on"]`` (the ``analyses.<name>.measure_on`` key) when set;
+    3. the top-level ``cfg.measure_on``.
+    """
+    if analysis.default_measure_on == "none":
+        return None
+    value = settings.get("measure_on")
+    return value if value is not None else cfg.measure_on
+
+
 def enabled_analyses(cfg: PipelineConfig) -> list:
     """``(analysis, merged settings)`` for every known, enabled section, in config order."""
     enabled = []

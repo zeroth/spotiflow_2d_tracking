@@ -55,6 +55,9 @@ def validate(cfg: PipelineConfig) -> None:
             continue
         if analysis.requires_tracks and not cfg.tracking.enabled:
             errors.append(f"analyses.{name} needs tracking; set tracking.enabled: true")
+        if settings.get("measure_on") is not None and \
+                settings["measure_on"] not in ("raw", "preprocessed"):
+            errors.append(f"analyses.{name}.measure_on must be raw or preprocessed")
         errors.extend(f"analyses.{name}: {problem}" for problem in analysis.validate(settings))
         try:
             OutputSelector(settings, analysis.catalogue, name)
