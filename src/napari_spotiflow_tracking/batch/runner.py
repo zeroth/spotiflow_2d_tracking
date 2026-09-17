@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -87,15 +88,27 @@ def _build_context(job: MovieJob, cfg: PipelineConfig, out_dir: Path, device: st
                         spots=spots, tracks=tracks, mask=mask)
 
 
+def _write_status(status_path: Path, row: dict) -> None:
+    """Write ``row`` as JSON atomically (temp file in the same folder + ``os.replace``)."""
+    tmp = status_path.with_name(f"{status_path.stem}.tmp{status_path.suffix}")
+    tmp.write_text(json.dumps(row, indent=2), encoding="utf-8")
+    os.replace(tmp, status_path)
+
+
 def _run_movie(job: MovieJob, cfg: PipelineConfig, analyses: list, device: str,
                detector: dict) -> dict:
     out_dir = movie_dir(Path(cfg.output_dir), job)
     status_path = out_dir / STATUS_FILE
     if cfg.skip_existing and status_path.exists():
-        row = json.loads(status_path.read_text(encoding="utf-8"))
-        row["status"] = "SKIP"
-        log.info("%s: already finished, skipped", job.key)
-        return row
+        try:
+            row = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            log.warning("%s: could not read %s (%s: %s); reprocessing", job.key,
+                       STATUS_FILE, type(exc).__name__, exc)
+        else:
+            row["status"] = "SKIP"
+            log.info("%s: already finished, skipped", job.key)
+            return row
 
     start = time.perf_counter()
     row = {"group": job.group, "movie": job.movie_id, "path": str(job.path),
@@ -119,7 +132,13 @@ def _run_movie(job: MovieJob, cfg: PipelineConfig, analyses: list, device: str,
         row["error"] = f"{type(exc).__name__}: {exc}"
     row["runtime_s"] = round(time.perf_counter() - start, 2)
     if row["status"] == "OK":
-        status_path.write_text(json.dumps(row, indent=2), encoding="utf-8")
+        try:
+            _write_status(status_path, row)
+        except Exception as exc:
+            log.error("%s: failed to write %s:\n%s", job.key, STATUS_FILE,
+                     traceback.format_exc())
+            row["status"] = "FAIL"
+            row["error"] = f"{type(exc).__name__}: {exc}"
     log.info("%s: %s (%d spots, %d tracks, %.1f s)", job.key, row["status"],
              row["n_spots"], row["n_tracks"], row["runtime_s"])
     return row

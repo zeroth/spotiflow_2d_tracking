@@ -1,5 +1,6 @@
 """End-to-end runner on tiny synthetic movies with LoG detection (no GPU, no model)."""
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -171,4 +172,40 @@ def test_hook_failure_sets_exit_code(tmp_path, recorder, monkeypatch):
     monkeypatch.setattr(recorder, "summarize_group", bad_summary)
     result = runner.run(_cfg(tmp_path, [str(tmp_path / "g")]))
     assert result.failed_hooks == ["recorder: group summary for 'g'"]
+    assert result.exit_code == 1
+
+
+def test_skip_existing_reprocesses_when_status_file_is_corrupt(tmp_path, recorder):
+    _movie(tmp_path / "g" / "m.tif")
+    cfg = _cfg(tmp_path, [str(tmp_path / "g")], skip_existing=True)
+    runner.run(cfg)
+    status_path = tmp_path / "out" / "g" / "m" / runner.STATUS_FILE
+    status_path.write_text("{not valid json", encoding="utf-8")
+    recorder.movies.clear()
+
+    result = runner.run(cfg)
+    assert recorder.movies == ["g/m"]
+    assert result.rows[0]["status"] == "OK"
+    assert result.exit_code == 0
+
+
+def test_status_write_failure_is_isolated(tmp_path, recorder, monkeypatch):
+    _movie(tmp_path / "g" / "ok.tif")
+    _movie(tmp_path / "g" / "flaky.tif")
+    real_replace = runner.os.replace
+
+    def flaky_replace(src, dst):
+        dst = Path(dst)
+        if dst.name == runner.STATUS_FILE and "flaky" in dst.parts:
+            raise OSError("status file is locked")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(runner.os, "replace", flaky_replace)
+    result = runner.run(_cfg(tmp_path, [str(tmp_path / "g")]))
+
+    rows = {r["movie"]: r for r in result.rows}
+    assert rows["flaky"]["status"] == "FAIL"
+    assert rows["flaky"]["error"].startswith("OSError")
+    assert rows["ok"]["status"] == "OK"
+    assert (tmp_path / "out" / "run_summary.csv").exists()
     assert result.exit_code == 1
