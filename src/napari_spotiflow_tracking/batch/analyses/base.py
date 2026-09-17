@@ -1,0 +1,72 @@
+"""Analysis plugin base class and registry.
+
+An analysis declares what it needs and what it can write, then implements up
+to three hooks. The runner calls ``run_movie`` once per movie, then
+``summarize_group`` per group and ``compare_groups`` when there is more than
+one group. Group-level hooks read the per-movie outputs from disk, so they
+also work for movies skipped with ``skip_existing``. Hooks create their
+``out_dir`` only when they write something.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+from ..config import PipelineConfig, deep_merge
+
+
+class Analysis:
+    name: str = ""
+    requires_tracks: bool = False
+    default_measure_on: str = "raw"
+    catalogue: tuple = ()
+
+    def default_settings(self) -> dict:
+        return {}
+
+    def validate(self, settings: dict) -> list:
+        """Problems with ``settings`` (already merged over defaults), as strings."""
+        return []
+
+    def run_movie(self, ctx, settings: dict, select) -> dict:
+        """Write this movie's outputs; return a flat record for run_summary.csv."""
+        raise NotImplementedError
+
+    def summarize_group(self, group: str, movie_dirs: list, settings: dict, select,
+                        out_dir: Path) -> None:
+        return None
+
+    def compare_groups(self, groups: dict, settings: dict, select, out_dir: Path) -> None:
+        return None
+
+
+REGISTRY: dict = {}
+
+
+def register(analysis: Analysis) -> Analysis:
+    if analysis.name in REGISTRY:
+        raise ValueError(f"analysis '{analysis.name}' is already registered")
+    REGISTRY[analysis.name] = analysis
+    return analysis
+
+
+def get_analysis(name: str) -> Optional[Analysis]:
+    return REGISTRY.get(name)
+
+
+def settings_for(analysis: Analysis, section) -> dict:
+    return deep_merge(analysis.default_settings(), section or {})
+
+
+def enabled_analyses(cfg: PipelineConfig) -> list:
+    """``(analysis, merged settings)`` for every known, enabled section, in config order."""
+    enabled = []
+    for name, section in cfg.analyses.items():
+        analysis = get_analysis(name)
+        if analysis is None or not isinstance(section, (dict, type(None))):
+            continue
+        settings = settings_for(analysis, section)
+        if settings.pop("enabled", True):
+            enabled.append((analysis, settings))
+    return enabled
