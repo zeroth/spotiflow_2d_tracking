@@ -13,7 +13,8 @@ import dataclasses
 import warnings
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, get_type_hints
+from typing import (Any, Dict, List, Optional, Sequence, Union, get_args, get_origin,
+                    get_type_hints)
 
 import yaml
 
@@ -163,6 +164,63 @@ def _join(where: str, key: str) -> str:
     return f"{where}.{key}" if where else key
 
 
+def _type_name(hint: Any) -> str:
+    if hint in (bool, int, float, str):
+        return hint.__name__
+    args = get_args(hint)
+    if get_origin(hint) is list:
+        return f"list of {_type_name(args[0])}"
+    if get_origin(hint) is Union:
+        inner = [arg for arg in args if arg is not type(None)]
+        return f"{_type_name(inner[0])} or null"
+    return str(hint)
+
+
+def _check_type(hint: Any, value: Any, sub: str) -> Any:
+    """Return ``value`` (an int converted for a float field) or raise :class:`ConfigError`.
+
+    Only scalars, ``List[scalar]`` and ``Optional[scalar]`` are checked; ``Any``
+    and containers of ``Any`` are left to the code that reads them.
+    """
+    def fail():
+        raise ConfigError(f"{sub} must be {_type_name(hint)}, got {value!r}")
+
+    if hint is bool:
+        if not isinstance(value, bool):
+            fail()
+        return value
+    if hint is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            fail()
+        return value
+    if hint is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            fail()
+        return float(value)
+    if hint is str:
+        if not isinstance(value, str):
+            fail()
+        return value
+    origin, args = get_origin(hint), get_args(hint)
+    if origin is list and args and args[0] in (bool, int, float, str):
+        if not isinstance(value, list):
+            fail()
+        try:
+            return [_check_type(args[0], item, sub) for item in value]
+        except ConfigError:
+            fail()
+    if origin is Union:
+        inner = [arg for arg in args if arg is not type(None)]
+        if len(inner) == 1 and len(args) == 2:
+            if value is None:
+                return None
+            try:
+                return _check_type(inner[0], value, sub)
+            except ConfigError:
+                fail()
+    return value
+
+
 def _build(cls, data: Any, where: str):
     """Instantiate dataclass ``cls`` from a mapping, warning on unknown keys."""
     if data is None:
@@ -200,7 +258,7 @@ def _build(cls, data: Any, where: str):
                 raise ConfigError(f"{sub} must be a mapping")
             kwargs[f.name] = copy.deepcopy(value)
         else:
-            kwargs[f.name] = value
+            kwargs[f.name] = _check_type(hint, value, sub)
     return cls(**kwargs)
 
 

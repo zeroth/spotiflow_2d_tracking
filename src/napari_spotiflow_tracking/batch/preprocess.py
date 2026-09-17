@@ -109,6 +109,13 @@ def parse_step(entry: Any, index: int) -> tuple:
     missing = [key for key in step.required if merged.get(key) is None]
     if missing:
         raise ConfigError(f"{where}.{name}: missing {', '.join(missing)}")
+    if name == "crop":
+        for axis in ("y", "x"):
+            bounds = merged[axis]
+            if not (isinstance(bounds, list) and len(bounds) == 2 and all(
+                    isinstance(b, (int, float)) and not isinstance(b, bool) for b in bounds)):
+                raise ConfigError(f"{where}.crop: {axis} must be a list of two numbers "
+                                  f"[start, stop], got {bounds!r}")
     if name in ("add", "subtract"):
         value = merged["value"]
         if value != "mean" and (isinstance(value, bool) or not isinstance(value, (int, float))):

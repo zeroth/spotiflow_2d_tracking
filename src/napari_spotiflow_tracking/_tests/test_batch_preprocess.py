@@ -102,3 +102,14 @@ def test_validate_steps_collects_all_errors():
     assert errors[0].startswith("preprocessing.steps[0]")
     assert errors[1].startswith("preprocessing.steps[2]")
     assert preprocess.validate_steps("gaussian_blur") == ["preprocessing.steps must be a list"]
+
+
+@pytest.mark.parametrize("params", [
+    {"y": [1, 2, 3], "x": [0, 4]},
+    {"y": [0, 4], "x": 5},
+    {"y": [0, "a"], "x": [0, 4]},
+    {"y": [0, True], "x": [0, 4]},
+])
+def test_crop_bounds_must_be_two_numbers(params):
+    with pytest.raises(ConfigError, match="must be a list of two numbers"):
+        preprocess.parse_step({"crop": params}, 0)

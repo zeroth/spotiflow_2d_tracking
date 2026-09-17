@@ -124,3 +124,29 @@ def test_resolved_config_round_trips(tmp_path):
         warnings.simplefilter("error", ConfigWarning)
         again = load_config(out)
     assert config_to_dict(again) == config_to_dict(cfg)
+
+
+@pytest.mark.parametrize("data, message", [
+    ({"tracking": {"memory": "five"}}, "tracking.memory must be int, got 'five'"),
+    ({"tracking": {"memory": True}}, "tracking.memory must be int, got True"),
+    ({"skip_existing": "no"}, "skip_existing must be bool, got 'no'"),
+    ({"outputs": {"formats": "png"}}, "outputs.formats must be list of str, got 'png'"),
+    ({"outputs": {"formats": ["png", 3]}}, "outputs.formats must be list of str"),
+    ({"outputs": {"dpi": "high"}}, "outputs.dpi must be int, got 'high'"),
+    ({"device": 0}, "device must be str, got 0"),
+    ({"calibration": {"pixel_size_nm": "100nm"}},
+     "calibration.pixel_size_nm must be float or null, got '100nm'"),
+])
+def test_scalar_types_are_checked(data, message):
+    with pytest.raises(ConfigError) as info:
+        load_config(data=data)
+    assert message in str(info.value)
+
+
+def test_optional_accepts_null_and_int_becomes_float():
+    cfg = load_config(data={"detection": {"spotiflow": {"prob_thresh": None}},
+                            "tracking": {"search_range": 3}})
+    assert cfg.detection.spotiflow.prob_thresh is None
+    assert cfg.tracking.search_range == 3.0 and isinstance(cfg.tracking.search_range, float)
+    cfg = load_config(data={"calibration": {"pixel_size_nm": 100}})
+    assert isinstance(cfg.calibration.pixel_size_nm, float)
