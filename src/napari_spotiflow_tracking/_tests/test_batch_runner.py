@@ -1,11 +1,13 @@
 """End-to-end runner on tiny synthetic movies with LoG detection (no GPU, no model)."""
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 import tifffile
+import yaml
 
 from napari_spotiflow_tracking.batch import analyses, runner
 from napari_spotiflow_tracking.batch.analyses import Analysis, register
@@ -31,6 +33,10 @@ class Recorder(Analysis):
 
     def __init__(self):
         self.movies, self.groups, self.compared = [], [], []
+        self.hook_cfgs = []
+
+    def default_settings(self):
+        return {"size": 3}
 
     def run_movie(self, ctx, settings, select):
         if "broken" in ctx.job.movie_id:
@@ -41,11 +47,13 @@ class Recorder(Analysis):
                                                          index=False)
         return {"n_particles": int(ctx.tracks["particle"].nunique())}
 
-    def summarize_group(self, group, movie_dirs, settings, select, out_dir):
+    def summarize_group(self, group, movie_dirs, settings, select, out_dir, cfg):
         self.groups.append((group, sorted(d.name for d in movie_dirs)))
+        self.hook_cfgs.append(cfg)
 
-    def compare_groups(self, groups, settings, select, out_dir):
+    def compare_groups(self, groups, settings, select, out_dir, cfg):
         self.compared.append(sorted(groups))
+        self.hook_cfgs.append(cfg)
 
 
 @pytest.fixture
@@ -209,3 +217,76 @@ def test_status_write_failure_is_isolated(tmp_path, recorder, monkeypatch):
     assert rows["ok"]["status"] == "OK"
     assert (tmp_path / "out" / "run_summary.csv").exists()
     assert result.exit_code == 1
+
+
+def test_failed_rerun_invalidates_status_file(tmp_path, recorder, monkeypatch):
+    _movie(tmp_path / "g" / "m.tif")
+    status_path = tmp_path / "out" / "g" / "m" / runner.STATUS_FILE
+    assert runner.run(_cfg(tmp_path, [str(tmp_path / "g")])).exit_code == 0
+    assert status_path.exists()
+
+    real_detect = runner.detect_stack
+
+    def broken_detect(*args, **kwargs):
+        raise RuntimeError("new parameters broke detection")
+
+    monkeypatch.setattr(runner, "detect_stack", broken_detect)
+    failed = runner.run(_cfg(tmp_path, [str(tmp_path / "g")]))
+    assert failed.rows[0]["status"] == "FAIL"
+    assert not status_path.exists()
+
+    monkeypatch.setattr(runner, "detect_stack", real_detect)
+    recorder.movies.clear()
+    result = runner.run(_cfg(tmp_path, [str(tmp_path / "g")], skip_existing=True))
+    assert result.rows[0]["status"] == "OK"
+    assert recorder.movies == ["g/m"]
+
+
+def test_status_file_that_cannot_be_removed_fails_movie(tmp_path, recorder, monkeypatch):
+    _movie(tmp_path / "g" / "m.tif")
+    runner.run(_cfg(tmp_path, [str(tmp_path / "g")]))
+    recorder.movies.clear()
+    real_unlink = Path.unlink
+
+    def locked_unlink(self, *args, **kwargs):
+        if self.name == runner.STATUS_FILE:
+            raise PermissionError("status file is locked")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+    result = runner.run(_cfg(tmp_path, [str(tmp_path / "g")]))
+    assert result.rows[0]["status"] == "FAIL"
+    assert result.rows[0]["error"] == "PermissionError: status file is locked"
+    assert recorder.movies == []
+
+
+def test_hooks_receive_cfg_and_dropped_groups_are_logged(tmp_path, recorder, caplog):
+    _movie(tmp_path / "a" / "m1.tif")
+    _movie(tmp_path / "b" / "m2.tif")
+    _movie(tmp_path / "c" / "broken.tif")
+    cfg = _cfg(tmp_path, [str(tmp_path / d) for d in "abc"])
+    with caplog.at_level(logging.WARNING, logger="napari_spotiflow_tracking.batch"):
+        runner.run(cfg)
+    assert recorder.groups == [("a", ["m1"]), ("b", ["m2"])]
+    assert recorder.compared == [["a", "b"]]
+    assert len(recorder.hook_cfgs) == 3
+    assert all(seen is cfg for seen in recorder.hook_cfgs)
+    dropped = [r.getMessage() for r in caplog.records
+               if r.levelno == logging.WARNING and "'c'" in r.getMessage()]
+    assert len(dropped) == 1 and "no movie succeeded" in dropped[0]
+
+
+def test_resolved_config_holds_merged_settings_and_effective_device(tmp_path, recorder,
+                                                                     monkeypatch):
+    _movie(tmp_path / "g" / "m.tif")
+    monkeypatch.setattr(runner, "_get_device", lambda use_gpu: "cpu")
+    cfg = _cfg(tmp_path, [str(tmp_path / "g")], device="cuda",
+               analyses={"recorder": {}, "unknown_one": {"x": 1}})
+    with pytest.warns(UserWarning, match="unknown analysis 'analyses.unknown_one'"):
+        runner.run(cfg)
+    resolved = yaml.safe_load((tmp_path / "out" / "resolved_config.yaml").read_text(
+        encoding="utf-8"))
+    assert resolved["device"] == "cpu"
+    assert resolved["analyses"]["recorder"]["size"] == 3
+    assert resolved["analyses"]["unknown_one"] == {"x": 1}
+    assert cfg.device == "cuda"  # the caller's config object is not mutated

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -114,6 +115,16 @@ def _run_movie(job: MovieJob, cfg: PipelineConfig, analyses: list, device: str,
     row = {"group": job.group, "movie": job.movie_id, "path": str(job.path),
            "status": "OK", "n_frames": 0, "n_spots": 0, "n_tracks": 0,
            "runtime_s": 0.0, "error": ""}
+    # The status file means "the outputs on disk are complete". Remove it before
+    # touching any output so a failed re-run cannot leave it describing mixed data.
+    try:
+        status_path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.error("%s: cannot remove stale %s (%s: %s); not processed", job.key,
+                  STATUS_FILE, type(exc).__name__, exc)
+        row["status"] = "FAIL"
+        row["error"] = f"{type(exc).__name__}: {exc}"
+        return row
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         ctx = _build_context(job, cfg, out_dir, device, detector)
@@ -151,13 +162,18 @@ def _run_hooks(cfg: PipelineConfig, analyses: list, jobs: list, rows: list) -> l
     for job in jobs:
         if (job.group, job.movie_id) in done:
             groups.setdefault(job.group, []).append(movie_dir(out, job))
+    if analyses:
+        for group in dict.fromkeys(job.group for job in jobs):
+            if group not in groups:
+                log.warning("group '%s' is left out of group summaries and comparisons: "
+                            "no movie succeeded", group)
     failed = []
     for analysis, settings in analyses:
         select = OutputSelector(settings, analysis.catalogue, analysis.name)
         for group, dirs in groups.items():
             try:
                 analysis.summarize_group(group, dirs, settings, select,
-                                         out / group / "_summary" / analysis.name)
+                                         out / group / "_summary" / analysis.name, cfg)
             except Exception:
                 label = f"{analysis.name}: group summary for '{group}'"
                 log.error("%s failed:\n%s", label, traceback.format_exc())
@@ -165,7 +181,7 @@ def _run_hooks(cfg: PipelineConfig, analyses: list, jobs: list, rows: list) -> l
         if len(groups) > 1:
             try:
                 analysis.compare_groups(groups, settings, select,
-                                        out / "_comparison" / analysis.name)
+                                        out / "_comparison" / analysis.name, cfg)
             except Exception:
                 label = f"{analysis.name}: group comparison"
                 log.error("%s failed:\n%s", label, traceback.format_exc())
@@ -196,6 +212,14 @@ def _write_summary(cfg: PipelineConfig, rows: list) -> None:
         save_figure(fig, out / "run_overview", cfg.outputs.formats, cfg.outputs.dpi)
 
 
+def _resolved(cfg: PipelineConfig, analyses: list, device: str) -> PipelineConfig:
+    """Copy of ``cfg`` holding the values the run uses: merged analysis settings
+    for enabled analyses (other sections as written) and the effective device."""
+    merged = {analysis.name: settings for analysis, settings in analyses}
+    sections = {name: merged.get(name, section) for name, section in cfg.analyses.items()}
+    return dataclasses.replace(cfg, analyses=sections, device=device)
+
+
 def run(cfg: PipelineConfig) -> RunResult:
     validate(cfg)
     jobs = expand_inputs(cfg)
@@ -206,9 +230,9 @@ def run(cfg: PipelineConfig) -> RunResult:
     log.addHandler(handler)
     log.setLevel(logging.INFO)
     try:
-        write_resolved_config(cfg, out / "resolved_config.yaml")
         analyses = enabled_analyses(cfg)
         device = _resolve_device(cfg.device)
+        write_resolved_config(_resolved(cfg, analyses, device), out / "resolved_config.yaml")
         log.info("%d movies in %d groups; analyses: %s", len(jobs),
                  len({j.group for j in jobs}), ", ".join(a.name for a, _ in analyses) or "none")
         detector: dict = {}

@@ -34,10 +34,22 @@ class Analysis:
         raise NotImplementedError
 
     def summarize_group(self, group: str, movie_dirs: list, settings: dict, select,
-                        out_dir: Path) -> None:
+                        out_dir: Path, cfg: PipelineConfig) -> None:
+        """Write group-level outputs from the per-movie outputs in ``movie_dirs``.
+
+        ``cfg`` carries ``outputs.formats``/``dpi``, ``calibration`` and the inputs.
+        Only groups with at least one successful movie are summarised.
+        """
         return None
 
-    def compare_groups(self, groups: dict, settings: dict, select, out_dir: Path) -> None:
+    def compare_groups(self, groups: dict, settings: dict, select, out_dir: Path,
+                       cfg: PipelineConfig) -> None:
+        """Write comparison outputs; ``groups`` maps group label to its movie dirs.
+
+        Groups whose movies all failed are left out of ``groups``. Take colours
+        from ``theme.group_colors([input_label(s) for s in cfg.inputs],
+        color_pins(cfg))`` so a dropped group does not shift palette slots.
+        """
         return None
 
 
