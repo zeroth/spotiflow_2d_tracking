@@ -55,9 +55,12 @@ def detect_stack(stack: np.ndarray, detection: DetectionSettings, model) -> pd.D
 
 
 def fit_spots(stack: np.ndarray, spots: pd.DataFrame, fit: FitSettings, device: str):
-    """Batched Gaussian fit + labelled mask, as scripts/bulk_track_analysis.py does."""
-    if len(spots) == 0:
-        return spots.copy(), np.zeros(stack.shape, dtype=np.int32)
+    """Batched Gaussian fit + labelled mask, as scripts/bulk_track_analysis.py does.
+
+    Returns consistent columns even for empty input: frame, y, x, amp, x_fit, y_fit,
+    sigma_x, sigma_y, bg, area, mean_intensity, max_intensity, spot_radius (from
+    fit_all_frames_gpu and make_gpu_spot_mask).
+    """
     from .._fitting import fit_all_frames_gpu, make_gpu_spot_mask
 
     fitted = fit_all_frames_gpu(stack, spots.rename(columns={"frame": "time"}),

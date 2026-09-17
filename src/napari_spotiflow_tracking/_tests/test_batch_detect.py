@@ -89,11 +89,19 @@ def test_tracking_empty_spots():
 
 
 def test_fit_empty_spots_returns_empty_mask():
+    pytest.importorskip("torchimize")
     stack = np.zeros((2, 8, 8), np.uint16)
     empty = pd.DataFrame({"frame": pd.Series(dtype=int), "y": pd.Series(dtype=float),
                           "x": pd.Series(dtype=float)})
-    spots, mask = detect.fit_spots(stack, empty, FitSettings(enabled=True), "cpu")
-    assert len(spots) == 0 and mask.shape == stack.shape and not mask.any()
+    empty_spots, empty_mask = detect.fit_spots(stack, empty, FitSettings(enabled=True), "cpu")
+
+    # Verify empty result has same columns as non-empty result
+    blob_stack = _blob_stack(n_frames=2, size=8)
+    blob_spots = detect.detect_stack(blob_stack, DetectionSettings(method="log"), model=None)
+    fitted_spots, _ = detect.fit_spots(blob_stack, blob_spots, FitSettings(enabled=True), "cpu")
+
+    assert len(empty_spots) == 0 and empty_mask.shape == stack.shape and not empty_mask.any()
+    assert list(empty_spots.columns) == list(fitted_spots.columns)
 
 
 def test_fit_spots_adds_fit_columns():
