@@ -212,7 +212,10 @@ def load_config(
     """Resolve a config from a YAML file and/or a dict plus ``--set`` overrides."""
     user: dict = {}
     if path is not None:
-        loaded = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        try:
+            loaded = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            raise ConfigError(f"cannot read config {path}: {exc}") from exc
         if loaded is not None and not isinstance(loaded, dict):
             raise ConfigError(f"{path} must contain a YAML mapping")
         user = loaded or {}

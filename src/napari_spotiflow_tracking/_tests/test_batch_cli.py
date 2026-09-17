@@ -81,3 +81,15 @@ def test_run_uses_set_overrides(tmp_path, empty_registry, monkeypatch):
     assert cli.main(["run", str(config), "--set", "tracking.memory=9",
                      "--set", "device=cpu"]) == 0
     assert seen["cfg"].tracking.memory == 9 and seen["cfg"].device == "cpu"
+
+
+def test_missing_config_file_exit_code(tmp_path, empty_registry, capsys):
+    assert cli.main(["validate", str(tmp_path / "nope.yaml")]) == 2
+    assert "ERROR: cannot read config" in capsys.readouterr().err
+
+
+def test_malformed_yaml_exit_code(tmp_path, empty_registry, capsys):
+    config = tmp_path / "bad.yaml"
+    config.write_text("inputs: [unclosed\noutput_dir: : :\n", encoding="utf-8")
+    assert cli.main(["validate", str(config)]) == 2
+    assert "ERROR: cannot read config" in capsys.readouterr().err
