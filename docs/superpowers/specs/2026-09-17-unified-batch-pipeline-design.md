@@ -96,7 +96,7 @@ Python ≥ 3.9 (`from __future__ import annotations`, no `match`).
 ```python
 class Analysis(Protocol):
     name: str                                  # "msd", "papa", "bleaching"
-    config_type: type                          # dataclass for its config section
+    def default_settings(self) -> dict: ...        # merged under the user's section; "enabled: false" disables
     requires_tracks: bool
     default_measure_on: str                    # "raw" | "preprocessed" | "none"
     catalogue: list[OutputSpec]                # name, level, kind, description
@@ -147,16 +147,16 @@ preprocessing:
   steps:                      # applied in order; [] = raw
     - crop: {y: [0, 263], x: [0, 263]}
     - walking_average: {window: 4}
-    - subtract: {value: mean}          # add | subtract | multiply | divide; number or "mean"
-    - background: {method: high_pass, sigma: 10}   # or {method: erosion, radius: 5}
-    - n2v: {epochs: 10, patch: 64}
+    - subtract: {value: mean}          # add | subtract; number or "mean"
+    - background: {method: high_pass, sigma: 10}   # or {method: erosion, disk_size: 5}
+    - n2v: {n_epochs: 10, patch_size: 64}
     - gaussian_blur: {sigma: 1.0}
 
 detection:
   method: spotiflow           # spotiflow | log
   spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}   # model: name or folder
   log: {min_sigma: 2, max_sigma: 10, num_sigma: 10, threshold: 0.09}
-  fit: {enabled: false, backend: auto, window: 2, max_radius: 2.0}
+  fit: {enabled: false, window: 2, max_radius: 2.0}   # needs torchimize
 
 tracking:
   enabled: true
@@ -304,8 +304,9 @@ bound of `unit_range[1]`.
   unaffected.
 - Group palette — fixed categorical order, assigned in `inputs` order;
   `inputs[].color` pins a colour.
-- Semantic palettes — motility classes, step counts (monomer/dimer/trimer),
-  PAPA groups — identical in every figure.
+- Semantic palettes — step counts, motility classes and PAPA groups share
+  #56b4e9 / #eda100 / #4a3aa7 (+ #7f7f7f unclassified); tab:orange/tab:green
+  are not used because they collapse under protanopia.
 - Helpers — axis labels with units from `calibration`, shared-y figure grids.
 
 A unit test checks the palettes for colour-vision-deficiency separation.
@@ -317,6 +318,8 @@ A unit test checks the palettes for colour-vision-deficiency separation.
 - A failing group/comparison hook: logged, run continues.
 - Exit code non-zero if any movie or hook failed; 2 for config errors.
 - `validate` subcommand runs steps 1–2 of the data flow only.
+- `skip_existing`: a movie with `movie_status.json` is skipped; otherwise
+  existing `spots.csv`/`tracks.csv` are reused and analyses re-run.
 
 ## Testing
 
