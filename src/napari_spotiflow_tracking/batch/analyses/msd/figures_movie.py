@@ -29,6 +29,14 @@ whose *inputs* are non-empty but which cannot find a representative track for
 one panel (e.g. no track of a given motility class) still draws that panel's
 "no data" placeholder, matching the source — only a wholly empty input skips
 the figure.
+
+One deliberate behavioural fix over the source: ``plot_msd_construction``'s
+fallback across motility classes picks the first non-``None`` candidate with
+an explicit ``is not None`` test, not the source's ``or`` chain — ``or`` on an
+``int | None`` value treats track id ``0`` as falsy, so whenever the chosen
+representative track happened to be trackpy's particle 0 the source silently
+fell through to (or ran out of) the next class. See the comment at the call
+site.
 """
 
 from __future__ import annotations
@@ -973,9 +981,15 @@ def plot_msd_construction(
         _grid_behind(ax_traj)
         _grid_behind(ax_msd)
 
-        tid = (_representative_track(fits, "diffusive")
-               or _representative_track(fits, "constrained")
-               or _representative_track(fits, "directed"))
+        # Deviation from source: the source chained these with `or`, which
+        # falls through to the next class whenever the chosen track id is 0
+        # (trackpy particle ids start at 0 and are never renumbered) — a
+        # falsy-but-valid id was silently treated as "no track". An explicit
+        # `is not None` test is used instead so track 0 is a legitimate pick.
+        tid = next((t for t in (_representative_track(fits, "diffusive"),
+                                _representative_track(fits, "constrained"),
+                                _representative_track(fits, "directed"))
+                    if t is not None), None)
         if tid is None:
             for a, t in ((ax_traj, "Lag construction"), (ax_msd, "MSD ± SEM")):
                 a.set_title(t, color="black")

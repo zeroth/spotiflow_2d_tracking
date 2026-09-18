@@ -221,14 +221,42 @@ def test_explanatory_figures_are_written(tmp_path):
 
 
 def test_archetypes_figure_is_full_width(tmp_path):
-    """The archetype figure exports at a fixed manuscript width (three panels)."""
+    """The archetype figure exports at a fixed manuscript width (three panels).
+
+    Asserts the exact pixel width the code implies, not just a wide-ish
+    ratio, so a regression to a 3-panel ``FIG_W_PANEL`` layout is caught.
+    """
     from PIL import Image
+    from napari_spotiflow_tracking.batch.analyses.msd.figures_movie import FIG_W_ARCHETYPES
     synthetic_movie(tmp_path / "g" / "m.tif", n_frames=60, n_spots=8, seed=7)
     cfg = msd_config(tmp_path, tmp_path / "g", figures=["msd_archetypes"])
     cfg.outputs.dpi = 100
     runner.run(cfg)
     with Image.open(tmp_path / "out" / "g" / "m" / "msd" / "msd_archetypes.png") as im:
-        assert im.width > im.height * 2
+        # matplotlib's Agg backend truncates the inches*dpi product to an
+        # int pixel count rather than rounding it (confirmed empirically:
+        # 6800/300 * 100 = 2266.667 renders as 2266px wide, not 2267).
+        assert im.width == int(FIG_W_ARCHETYPES * cfg.outputs.dpi)
+
+
+def test_representative_track_median_alpha(tmp_path):
+    """The representative track is the one whose alpha is the class median —
+
+    including when that track's id is 0. ``_representative_track`` used to
+    sit behind an ``or`` chain in ``plot_msd_construction`` that treated id 0
+    as falsy; this test pins the function's own return value directly so a
+    regression there is caught regardless of how callers combine results.
+    """
+    from napari_spotiflow_tracking.batch.analyses.msd.figures_movie import _representative_track
+
+    fits = pd.DataFrame({
+        "track_id": [0, 5, 7],
+        "alpha": [0.5, 1.0, 0.2],
+        "motility_class": ["diffusive", "diffusive", "diffusive"],
+    })
+    # Sorted alphas: 0.2 (id 7), 0.5 (id 0), 1.0 (id 5) -> median is id 0.
+    assert _representative_track(fits, "diffusive") == 0
+    assert _representative_track(fits, "directed") is None
 
 
 def test_figure_module_uses_no_pyplot():
