@@ -25,7 +25,7 @@ CATALOGUE = (
     OutputSpec("path_length_hist", "movie", "figure", "Distribution of total path length walked per track"),
     OutputSpec("speed_hist", "movie", "figure", "Distribution of per-track mean speed"),
     OutputSpec("length_per_track", "movie", "figure", "Per-track cumulative displacement vs elapsed time"),
-    OutputSpec("speed_per_track", "movie", "figure", "Per-track frame-to-frame speed vs elapsed time"),
+    OutputSpec("speed_per_track", "movie", "figure", "Per-track instantaneous speed vs elapsed time"),
     OutputSpec("directed_displacement", "movie", "figure", "Run-length distribution of directed tracks"),
     OutputSpec("directed_velocity", "movie", "figure", "Velocity distribution of directed tracks"),
     OutputSpec("directed_displacement_vs_velocity", "movie", "figure",
@@ -104,8 +104,14 @@ class MsdAnalysis(Analysis):
         )
         table = None
         if needs_table:
-            measure_on = measure_on_for(self, settings, ctx.config)
-            image = ctx.image(measure_on) if measure_on else None
+            # None of the eight distribution/directed figures reads an
+            # intensity column, and compute.track_table accepts image=None —
+            # so the (potentially expensive) image load only happens when
+            # track_analysis.csv itself is being written.
+            image = None
+            if select.table("track_analysis"):
+                measure_on = measure_on_for(self, settings, ctx.config)
+                image = ctx.image(measure_on) if measure_on else None
             table = compute.track_table(tracked, image, fits, units)
             if select.table("track_analysis"):
                 save_table(table, out_dir / "track_analysis.csv")
@@ -153,12 +159,12 @@ class MsdAnalysis(Analysis):
                 if select.figure("directed_displacement"):
                     figures_movie.plot_directed_hist(
                         directed, units, "_disp",
-                        theme.axis_label("displacement", units.calibration),
+                        f"Run length ({theme.unit('length', units.calibration)})",
                         out_dir / "directed_displacement", formats, dpi)
                 if select.figure("directed_velocity"):
                     figures_movie.plot_directed_hist(
                         directed, units, "_vel",
-                        theme.axis_label("speed", units.calibration),
+                        f"Velocity ({theme.unit('speed', units.calibration)})",
                         out_dir / "directed_velocity", formats, dpi)
                 if select.figure("directed_displacement_vs_velocity"):
                     figures_movie.plot_directed_joint(

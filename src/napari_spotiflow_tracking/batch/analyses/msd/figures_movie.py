@@ -694,7 +694,7 @@ def plot_speed_hist(
         speed = table["mean_speed"].to_numpy(dtype=float) * units.length_scale / units.delta
         ax.hist(speed, bins=30, color=theme.NEUTRAL, edgecolor="black", zorder=2)
 
-        ax.set_xlabel(theme.axis_label("speed", units.calibration), color="black")
+        ax.set_xlabel(f"Mean speed ({theme.unit('speed', units.calibration)})", color="black")
         ax.set_ylabel("# tracks", color="black")
         ax.set_title("Track mean-speed distribution", color="black")
         fig.tight_layout()
@@ -708,13 +708,20 @@ def plot_length_per_track(
     stem: Path,
     formats,
     dpi: int,
+    *,
+    _capture: dict | None = None,
 ) -> None:
     """One line per track: cumulative displacement vs elapsed time.
 
     ``cum_disp`` has no matching :func:`theme.axis_label` kind — it is a
     running sum over time, not the track's net (start-to-end) displacement —
-    so its label stays literal, built from ``units.length_unit`` the same way
-    the source script's uncalibrated/calibrated strings did.
+    so its label keeps the source's noun, taking only the unit from
+    :func:`theme.unit`.
+
+    ``_capture`` is a test hook: when given, it is filled with
+    ``{"n_lines": ...}`` — the number of track lines actually drawn — since
+    ``max_tracks`` being honoured is otherwise only checkable by parsing the
+    saved image.
     """
     if tracked.empty:
         return
@@ -726,6 +733,7 @@ def plot_length_per_track(
         ax = fig.subplots()
         _grid_behind(ax)
 
+        n_lines = 0
         for tid in ids:
             grp = tracked[tracked["particle"] == tid].sort_values("frame")
             if len(grp) < 2:
@@ -735,9 +743,13 @@ def plot_length_per_track(
             cum = np.concatenate([[0.0], np.cumsum(steps)]) * units.length_scale
             ax.plot(grp["frame"].to_numpy() * units.delta, cum,
                     color=theme.RAW_TRACE, alpha=0.5, linewidth=0.7)
+            n_lines += 1
+        if _capture is not None:
+            _capture["n_lines"] = n_lines
 
         ax.set_xlabel(theme.axis_label("time", units.calibration), color="black")
-        ax.set_ylabel(f"Cumulative displacement ({units.length_unit})", color="black")
+        ax.set_ylabel(f"Cumulative displacement ({theme.unit('length', units.calibration)})",
+                      color="black")
         ax.set_title(f"Per-track cumulative displacement (top {len(ids)})", color="black")
         fig.tight_layout()
         _finish(fig, stem, formats, dpi)
@@ -777,7 +789,8 @@ def plot_speed_per_track(
                     color=theme.RAW_TRACE, alpha=0.5, linewidth=0.7)
 
         ax.set_xlabel(theme.axis_label("time", units.calibration), color="black")
-        ax.set_ylabel(theme.axis_label("speed", units.calibration), color="black")
+        ax.set_ylabel(f"Instantaneous speed ({theme.unit('speed', units.calibration)})",
+                      color="black")
         ax.set_title(f"Per-track speed (top {len(ids)})", color="black")
         fig.tight_layout()
         _finish(fig, stem, formats, dpi)
@@ -801,26 +814,24 @@ def plot_directed_hist(
     """
     if directed.empty:
         return
+    v = pd.to_numeric(directed[column], errors="coerce").to_numpy(dtype=float)
+    v = v[np.isfinite(v)]
+    if not v.size:
+        # Empty input writes nothing — the caller already skips this call
+        # when `directed` is empty; this covers the column-specific case.
+        return
     with theme.style():
         fig = Figure(figsize=(FIG_W, FIG_H))
         ax = fig.subplots()
         _grid_behind(ax)
 
-        v = pd.to_numeric(directed[column], errors="coerce").to_numpy(dtype=float)
-        v = v[np.isfinite(v)]
-        if v.size:
-            lo, hi = _pct_limits(v)
-            ax.hist(v, bins=np.linspace(lo, hi, 40),
-                    color=theme.MOTILITY_COLORS["directed"], zorder=2)
-            ax.set_xlim(lo, hi)
-            ax.set_title(
-                f"Directed tracks — n = {v.size}  (median {np.median(v):.3g})",
-                color="black")
-        else:
-            ax.annotate("no directed tracks", xy=(0.5, 0.5),
-                        xycoords="axes fraction", ha="center", va="center",
-                        fontsize=_FONT_ANNOT, color="#52514e")
-            ax.set_title("Directed tracks — n = 0", color="black")
+        lo, hi = _pct_limits(v)
+        ax.hist(v, bins=np.linspace(lo, hi, 40),
+                color=theme.MOTILITY_COLORS["directed"], zorder=2)
+        ax.set_xlim(lo, hi)
+        ax.set_title(
+            f"Directed tracks — n = {v.size}  (median {np.median(v):.3g})",
+            color="black")
 
         ax.set_xlabel(xlabel, color="black")
         ax.set_ylabel("# tracks", color="black")
@@ -873,8 +884,8 @@ def plot_directed_joint(
                         va="bottom", fontsize=_FONT_ANNOT_SMALL, color="#52514e")
         ax_top.set_title(f"Directed tracks — n = {len(directed)}", color="black")
 
-        ax.set_xlabel(theme.axis_label("displacement", units.calibration), color="black")
-        ax.set_ylabel(theme.axis_label("speed", units.calibration), color="black")
+        ax.set_xlabel(f"Run length ({theme.unit('length', units.calibration)})", color="black")
+        ax.set_ylabel(f"Velocity ({theme.unit('speed', units.calibration)})", color="black")
         ax_top.set_ylabel("# tracks", color="black", fontsize=_FONT_ANNOT)
         ax_right.set_xlabel("# tracks", color="black", fontsize=_FONT_ANNOT)
         _finish(fig, stem, formats, dpi)

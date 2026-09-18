@@ -162,3 +162,25 @@ def test_save_table_creates_parent(tmp_path):
 def test_msd_axis_kinds(kind, physical, expected):
     cal = Calibration(pixel_size_nm=100, frame_interval_s=0.5) if physical else Calibration()
     assert theme.axis_label(kind, cal) == expected
+
+
+@pytest.mark.parametrize("kind, physical, expected", [
+    ("length", False, "px"),
+    ("length", True, "µm"),
+    ("time", False, "frames"),
+    ("time", True, "s"),
+    ("speed", False, "px/frame"),
+    ("speed", True, "µm/s"),
+    ("msd", False, "px²"),
+    ("msd", True, "µm²"),
+    ("diffusion", False, "px²/frame^α"),
+    ("diffusion", True, "µm²/s^α"),
+])
+def test_unit_kinds(kind, physical, expected):
+    cal = Calibration(pixel_size_nm=100, frame_interval_s=0.5) if physical else Calibration()
+    assert theme.unit(kind, cal) == expected
+
+
+def test_unit_unknown_kind_raises():
+    with pytest.raises(ValueError):
+        theme.unit("colour", Calibration())

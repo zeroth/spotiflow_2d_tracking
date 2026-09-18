@@ -88,3 +88,24 @@ def axis_label(kind: str, calibration: Calibration) -> str:
     if kind not in labels:
         raise ValueError(f"unknown axis kind '{kind}'; choose one of: {', '.join(labels)}")
     return labels[kind]
+
+
+def unit(kind: str, calibration: Calibration) -> str:
+    """The bare unit string for a quantity, sharing :func:`axis_label`'s scaling.
+
+    For a figure whose noun isn't the generic one ``axis_label`` gives it
+    (e.g. "Run length" or "Instantaneous speed" rather than "Net displacement"
+    or "Speed"), the caller builds its own label and takes just the unit from
+    here — so the physical/pixel switch still lives in one place.
+    """
+    physical = calibration.is_physical
+    units = {
+        "length": "µm" if physical else "px",
+        "time": "s" if physical else "frames",
+        "speed": "µm/s" if physical else "px/frame",
+        "msd": "µm²" if physical else "px²",
+        "diffusion": "µm²/s^α" if physical else "px²/frame^α",
+    }
+    if kind not in units:
+        raise ValueError(f"unknown unit kind '{kind}'; choose one of: {', '.join(units)}")
+    return units[kind]

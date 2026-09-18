@@ -283,3 +283,24 @@ def test_max_tracks_plot_limits_per_track_figures(tmp_path):
                      max_tracks_plot=2)
     assert runner.run(cfg).exit_code == 0
     assert (tmp_path / "out" / "g" / "m" / "msd" / "length_per_track.png").exists()
+
+
+def test_max_tracks_plot_caps_lines_drawn(tmp_path):
+    """max_tracks_plot must actually cap the number of lines drawn, not just
+    let the figure exist regardless of whether the setting is honoured."""
+    from napari_spotiflow_tracking.batch.analyses.msd import figures_movie
+    from napari_spotiflow_tracking.batch.analyses.msd.units import Units
+    from napari_spotiflow_tracking.batch.config import Calibration
+
+    tracked = pd.concat([
+        pd.DataFrame({"frame": range(10), "y": np.arange(10, dtype=float) + i,
+                      "x": np.arange(10, dtype=float) * 0.5, "particle": i})
+        for i in range(5)
+    ])
+    captured = {}
+    figures_movie.plot_length_per_track(
+        tracked, Units(Calibration()), max_tracks=2,
+        stem=tmp_path / "length_per_track", formats=["png"], dpi=40,
+        _capture=captured)
+    assert (tmp_path / "length_per_track.png").exists()
+    assert captured["n_lines"] == 2
