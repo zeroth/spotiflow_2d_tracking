@@ -194,11 +194,11 @@ exactly those checks and nothing else.
 
 `modality` picks a preset of defaults, which your config then overrides:
 
-| Modality | Preprocessing | Tracking |
-|---|---|---|
-| `tracking` | walking average 4 → subtract mean → blur σ 1 | on, search 5, memory 3 |
-| `papa` | none | off |
-| `bleaching` | subtract mean → blur σ 1 | on, search 3, memory 10 |
+| Modality | Preprocessing | Tracking | Fitting / masks |
+|---|---|---|---|
+| `tracking` | walking average 4 → subtract mean → blur σ 1 | on, search 5, memory 3 | on |
+| `papa` | none | off | off — PAPA only counts spots; no fit, no `mask.tif` |
+| `bleaching` | subtract mean → blur σ 1 | on, search 3, memory 10 | on |
 
 ### Choosing a detector
 
@@ -228,7 +228,9 @@ Every spot is fitted with a 2D Gaussian by default (`detection.fit.enabled: true
 `spots.csv` carries the fit and region-property columns (`amp`, `x_fit`, `y_fit`,
 `sigma_x`, `sigma_y`, `bg`, `area`, `mean_intensity`, `max_intensity`,
 `spot_radius`), and `mask.tif` is written unless `outputs.save_masks` is set to
-`false`. Fitting uses the batched `torchimize` backend on a GPU device when it is
+`false`. The `papa` preset is the exception: it sets `detection.fit.enabled: false`
+and `outputs.save_masks: false`, since PAPA only counts spots and never reads the
+fit columns or the mask. Fitting uses the batched `torchimize` backend on a GPU device when it is
 importable, and a per-frame `scipy` fallback otherwise (including whenever
 `device: cpu`, since the batched solver's CPU path has a known numerical-stability
 issue), so it needs no extra install to be on by default. The two backends produce
@@ -246,6 +248,10 @@ row reads `FAIL`, and the rest carry on. The command exits 0 when everything
 worked, 1 when any movie failed, and 2 when the config itself is wrong — so a
 wrapping script can tell the difference. With `skip_existing: true` a rerun
 skips movies that finished and reuses spots and tracks for movies that did not.
+Output folders written before this change hold a `tracks.csv` that was already
+filtered by the old `tracking.min_track_length`; resuming with `skip_existing`
+reuses that filtered file as-is, so if you want the unfiltered set, re-run
+those movies from scratch or delete their `tracks.csv` first.
 
 ### Opening the results in napari
 

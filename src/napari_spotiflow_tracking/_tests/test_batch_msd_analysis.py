@@ -184,6 +184,7 @@ def test_short_tracks_reach_tracks_csv_but_not_the_fits(tmp_path):
     fits = pd.read_csv(movie / "msd" / "msd_fits.csv")
     lengths = tracks.groupby("particle").size()
     assert (lengths < 20).any()                     # short tracks are on disk
+    assert len(fits) > 0                             # and some tracks were long enough to fit
     assert set(fits["track_id"]) <= set(lengths[lengths >= 20].index)
 
 

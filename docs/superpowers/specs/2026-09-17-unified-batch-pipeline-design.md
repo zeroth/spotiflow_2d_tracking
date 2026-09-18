@@ -56,7 +56,7 @@ One batch pipeline, inside the package, driven by a YAML config:
 | Unknown config keys / output names | Warning, not error |
 | Existing scripts | Left untouched |
 | Internals | Analysis plugins + dataclass config (no new framework) |
-| Fitting/masks | On by default; torchimize when importable, else the per-frame scipy fitter; mask.tif written unless save_masks is false (user, 2026-09-18) |
+| Fitting/masks | On by default; torchimize when importable, else the per-frame scipy fitter; mask.tif written unless save_masks is false. Exception: the `papa` preset sets both off — it only counts spots (user, 2026-09-18) |
 | Minimum track length | Per analysis (e.g. msd.min_length), never at tracking time — tracks.csv keeps every linked track (user, 2026-09-18) |
 
 ## Architecture
@@ -207,7 +207,7 @@ the function signatures and the Pre-Processing widget.
 | Preset | Tracking | Analyses enabled | Other defaults |
 |---|---|---|---|
 | `tracking` | on | `msd` | bulk script defaults: walking average 4 → subtract mean → blur σ 1; search 5, memory 3 |
-| `papa` | off | `papa` | no preprocessing; `papa.group1_size` / `group2_size` required (no default) |
+| `papa` | off | `papa` | no preprocessing; `papa.group1_size` / `group2_size` required (no default); opts out of fitting/masks (only counts spots) |
 | `bleaching` | on | `bleaching` | subtract mean → blur σ 1; search 3, memory 10 |
 
 ### Validation

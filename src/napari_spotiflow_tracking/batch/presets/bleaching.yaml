@@ -10,7 +10,8 @@ tracking:
   enabled: true
   search_range: 3.0
   memory: 10
-# The minimum track length belongs to the bleaching analysis, not to tracking
-# (tracks.csv keeps everything trackpy links); the bleaching analysis will
-# carry its own minimum when it is built (phase 4) — nothing is lost here.
+  # No min_track_length here: the minimum track length belongs to the
+  # bleaching analysis, not to tracking (tracks.csv keeps everything trackpy
+  # links); the bleaching analysis will carry its own minimum when it is
+  # built (phase 4) — nothing is lost here.
 measure_on: raw

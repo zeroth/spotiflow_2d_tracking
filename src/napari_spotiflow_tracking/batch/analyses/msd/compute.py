@@ -202,7 +202,7 @@ def track_table(
     ``min_length`` — get ``"unclassified"`` rather than NaN) and calibrated
     copies of the geometry columns appended beside the pixel ones: downstream
     summaries read this table back and do their own scaling, and ``length``
-    in frames is what ``min_track_length`` cuts on.
+    in frames is what ``min_length`` cuts on.
     """
     table = compute_track_properties(tracked, image=image)
 
@@ -214,7 +214,7 @@ def track_table(
     table["motility_class"] = table["motility_class"].fillna("unclassified")
     # Calibrated copies of the geometry columns, beside the pixel ones rather
     # than over them: downstream summaries read this table back and do their
-    # own scaling, and `length` in frames is what min_track_length cuts on.
+    # own scaling, and `length` in frames is what min_length cuts on.
     table = add_physical_columns(
         table, units.calibration.pixel_size_nm, units.calibration.frame_interval_s,
     )
