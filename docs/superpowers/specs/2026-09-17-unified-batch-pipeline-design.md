@@ -372,6 +372,7 @@ Each phase gets its own implementation plan and ends usable.
    the run's `inputs` groups instead of sub-folders of a parent, and
    `skip_existing` lets already-processed folders be re-summarised without
    re-detecting.
+   **Done** (branch `feat/batch-msd`).
 3. **papa** analysis, with its group and comparison hooks on the layer
    phase 2 established.
 4. **bleaching** analysis, likewise.

@@ -241,25 +241,48 @@ the track columns is declined, so other CSVs open as they always did.
 
 ### Analyses
 
-**This version ships no analyses yet** — a run does pre-processing, detection
-and tracking, and `spotiflow-batch list-outputs` reports that none are
-registered. MSD with motility classification, PAPA cycle counts and
-photobleaching-step analysis are being ported into the pipeline.
+Detection and tracking run once per movie, and every enabled analysis reads
+those results, writing tables and figures per movie, per group, and across
+groups. `spotiflow-batch list-outputs <name>` lists what an analysis can write,
+and `figures`/`tables` select from it (`all`, `none`, or a list of names).
 
-Once an analysis is available it is enabled in the config, and
-`list-outputs <name>` lists the figures and tables it can write, which you can
-then select:
+**`msd`** — mean squared displacement and motility classification, enabled by
+the `tracking` preset:
 
 ```yaml
 analyses:
-  bleaching:
-    roi_size: 3
-    figures: [representative_traces]     # or: all | none
+  msd:
+    max_lag: 25           # longest lag fitted, in frames
+    min_length: 5         # shortest track admitted to the fits
+    sigma_nm: 35          # static localization error, used only with calibration
+    max_tracks_plot: 200  # cap for the per-track figures
+    figures: all
+    tables: all
 ```
 
-Detection and tracking run once per movie, and every enabled analysis reads
-those same results, writing its own tables and figures per movie, per group,
-and across groups.
+Every track's MSD is fitted with `MSD = 4·D·t^α + 4·σ²`, and α bins the track
+into **constrained** (α < 0.4), **diffusive** (0.4 ≤ α ≤ 1.2) or **directed**
+(α > 1.2), following the motility analysis in
+[Commun Biol 4, 137 (2021)](https://www.nature.com/articles/s42003-021-01740-y#Sec9).
+Per movie you get `msd_curves.csv`, `msd_fits.csv` and `track_analysis.csv`
+beside 15 figures — the regime map, the combined MSD curves, class shares, the
+D–α joint distribution, length/speed/displacement distributions, and the three
+explanatory figures (construction, archetypes, shape comparison) that follow
+Figure 1 of
+[Schirripa Spagnolo & Luin, *Int. J. Mol. Sci.* **25**, 8660 (2024)](https://pmc.ncbi.nlm.nih.gov/articles/PMC11354962/).
+
+Each group gets the same metrics pooled over its movies in
+`<group>/_summary/msd/`, and a run with more than one group also writes
+`_comparison/msd/`: overlaid group distributions, their density versions, the
+harmonised per-group figures on a shared axis range, and
+`comparison_summary.csv`. Group colours are assigned in `inputs` order and are
+the same in every figure of the run.
+
+With `calibration` set, D is reported in µm²/s^α and every axis reads µm and
+seconds; without it, px and frames (and σ is dropped, since a nanometre figure
+has no meaning in pixels).
+
+PAPA cycle counts and photobleaching-step analysis are being ported next.
 
 ## Running tests
 

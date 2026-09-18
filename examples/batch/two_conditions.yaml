@@ -50,3 +50,13 @@ tracking:
 outputs:
   formats: [png, svg]
   dpi: 300
+
+# `spotiflow-batch list-outputs msd` lists the figure names accepted by `figures:`.
+analyses:
+  msd:
+    max_lag: 25           # longest lag fitted, in frames
+    min_length: 5         # shortest track admitted to the fits
+    sigma_nm: 35          # static localization error, used only with calibration
+    max_tracks_plot: 200  # cap for the per-track figures
+    figures: all
+    tables: all
