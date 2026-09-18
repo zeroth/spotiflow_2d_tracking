@@ -79,12 +79,18 @@ def measure_on_for(analysis: Analysis, settings: dict, cfg: PipelineConfig) -> O
     1. ``None`` when ``analysis.default_measure_on == "none"`` (the analysis reads
        no intensities, so any setting is ignored);
     2. ``settings["measure_on"]`` (the ``analyses.<name>.measure_on`` key) when set;
-    3. the top-level ``cfg.measure_on``.
+    3. the top-level ``cfg.measure_on`` when set;
+    4. otherwise ``analysis.default_measure_on`` — the top-level key is unset by
+       default precisely so each analysis keeps the stack its own science needs
+       (msd samples the preprocessed movie); a top-level value is a deliberate
+       run-wide override, as in the ``bleaching`` preset.
     """
     if analysis.default_measure_on == "none":
         return None
     value = settings.get("measure_on")
-    return value if value is not None else cfg.measure_on
+    if value is not None:
+        return value
+    return cfg.measure_on if cfg.measure_on is not None else analysis.default_measure_on
 
 
 def enabled_analyses(cfg: PipelineConfig) -> list:

@@ -174,6 +174,44 @@ def test_figures_only_run_skips_track_table(tmp_path):
     assert not (msd_dir / "track_analysis.csv").exists()
 
 
+def test_msd_measures_on_the_preprocessed_movie_by_default(tmp_path):
+    """No explicit `measure_on` → the msd analysis's own default (preprocessed).
+
+    The preprocessing chain shifts every pixel by a known offset, so the raw
+    and preprocessed intensities cannot be confused: a default run must match
+    the preprocessed stack, and only `measure_on: raw` falls back to the raw one.
+    """
+    synthetic_movie(tmp_path / "g" / "m.tif")
+    shift = 500
+
+    def track_analysis(out_name, **extra):
+        data = {
+            "modality": "tracking",
+            "inputs": [str(tmp_path / "g")],
+            "output_dir": str(tmp_path / out_name),
+            "device": "cpu",
+            "preprocessing": {"steps": [{"add": {"value": shift}}]},
+            "detection": {"method": "log"},
+            "tracking": {"enabled": True, "search_range": 3, "memory": 0},
+            "outputs": {"formats": ["png"], "dpi": 40},
+            "analyses": {"msd": {"max_lag": 10, "min_length": 5, "figures": "none"}},
+        }
+        data.update(extra)
+        assert runner.run(load_config(data=data)).exit_code == 0
+        return pd.read_csv(Path(data["output_dir"]) / "g" / "m" / "msd" /
+                           "track_analysis.csv")
+
+    default = track_analysis("out_default")
+    on_raw = track_analysis("out_raw", measure_on="raw")
+    on_pre = track_analysis("out_pre", measure_on="preprocessed")
+
+    # Detection runs on the preprocessed stack either way, so the tracks match.
+    assert list(default["track_id"]) == list(on_raw["track_id"])
+    assert len(default) > 0
+    assert np.allclose(default["mean_intensity"], on_pre["mean_intensity"])
+    assert np.allclose(default["mean_intensity"], on_raw["mean_intensity"] + shift)
+
+
 def test_short_tracks_reach_tracks_csv_but_not_the_fits(tmp_path):
     """The msd cut applies to the analysis, not to what tracking wrote."""
     synthetic_movie(tmp_path / "g" / "m.tif", n_frames=40, n_spots=6, seed=11)

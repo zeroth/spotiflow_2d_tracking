@@ -23,7 +23,8 @@ def validate(cfg: PipelineConfig) -> None:
         errors.append("output_dir is required")
     if cfg.device not in ("cuda", "cpu"):
         errors.append("device must be cuda or cpu")
-    if cfg.measure_on not in ("raw", "preprocessed"):
+    # Unset is the default ("the analysis decides"); only an explicit value is checked.
+    if cfg.measure_on is not None and cfg.measure_on not in ("raw", "preprocessed"):
         errors.append("measure_on must be raw or preprocessed")
     if cfg.detection.method not in ("spotiflow", "log"):
         errors.append("detection.method must be spotiflow or log")

@@ -110,6 +110,11 @@ def test_analysis_section_must_be_mapping(demo):
         validate(_cfg(analyses={"demo": [1, 2]}))
 
 
+class Pre(Analysis):
+    name = "pre"
+    default_measure_on = "preprocessed"
+
+
 def test_measure_on_for_resolution_order(demo):
     cfg = _cfg(measure_on="preprocessed")
     assert measure_on_for(demo, {}, cfg) == "preprocessed"
@@ -123,10 +128,28 @@ def test_measure_on_for_resolution_order(demo):
     assert measure_on_for(Blind(), {"measure_on": "raw"}, cfg) is None
 
 
+def test_measure_on_falls_back_to_the_analysis_default(demo):
+    """Unset (the default) means "the analysis decides", not "raw"."""
+    cfg = _cfg()
+    assert cfg.measure_on is None
+    assert measure_on_for(demo, {}, cfg) == "raw"           # Demo keeps the base default
+    assert measure_on_for(Pre(), {}, cfg) == "preprocessed"
+    # an explicit value still wins, at either level
+    assert measure_on_for(Pre(), {"measure_on": "raw"}, cfg) == "raw"
+    assert measure_on_for(Pre(), {}, _cfg(measure_on="raw")) == "raw"
+
+
+def test_unset_measure_on_is_valid():
+    """``measure_on: null`` is the default and must not be rejected."""
+    validate(_cfg(measure_on=None))
+
+
 def test_analysis_measure_on_is_validated(demo):
     with pytest.raises(ConfigError, match="analyses.demo.measure_on must be raw or preprocessed"):
         validate(_cfg(analyses={"demo": {"measure_on": "denoised"}}))
     validate(_cfg(tracking={"enabled": True},
                   analyses={"demo": {"measure_on": "preprocessed"}}))
+    # unset is fine — the analysis decides
+    validate(_cfg(tracking={"enabled": True}, analyses={"demo": {"measure_on": None}}))
     # a disabled analysis is not checked
     validate(_cfg(analyses={"demo": {"enabled": False, "measure_on": "denoised"}}))

@@ -28,8 +28,9 @@ SECTION_HELP = {
                  "scipy fallback.",
     "tracking": "trackpy linking; every linked track is written, and each analysis "
                 "applies its own minimum length.",
-    "measure_on": "raw or preprocessed: the movie analyses read intensities from, "
-                  "unless an analysis overrides it.",
+    "measure_on": "raw or preprocessed: the movie analyses read intensities from. "
+                  "Unset (null) means each analysis decides for itself; a value "
+                  "here overrides every analysis that sets no measure_on of its own.",
     "outputs": "formats: any of png, pdf, svg.",
     "analyses": "Enabled analyses and their settings; `spotiflow-batch list-outputs` "
                 "lists figure and table names.",

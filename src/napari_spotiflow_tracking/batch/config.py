@@ -117,7 +117,10 @@ class PipelineConfig:
     preprocessing: PreprocessingSettings = field(default_factory=PreprocessingSettings)
     detection: DetectionSettings = field(default_factory=DetectionSettings)
     tracking: TrackingSettings = field(default_factory=TrackingSettings)
-    measure_on: str = "raw"
+    # Unset means "each analysis's own default" (Analysis.default_measure_on);
+    # an explicit "raw"/"preprocessed" here overrides every analysis that does
+    # not set its own analyses.<name>.measure_on.
+    measure_on: Optional[str] = None
     outputs: OutputSettings = field(default_factory=OutputSettings)
     analyses: Dict[str, Any] = field(default_factory=dict)
 
