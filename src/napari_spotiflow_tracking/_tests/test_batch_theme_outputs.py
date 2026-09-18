@@ -141,3 +141,24 @@ def test_save_figure_falls_back_when_target_locked(tmp_path, monkeypatch):
 def test_save_table_creates_parent(tmp_path):
     path = outputs.save_table(pd.DataFrame({"a": [1, 2]}), tmp_path / "x" / "t.csv")
     assert pd.read_csv(path)["a"].tolist() == [1, 2]
+
+
+@pytest.mark.parametrize("kind, physical, expected", [
+    ("speed", False, "Speed (px/frame)"),
+    ("speed", True, "Speed (µm/s)"),
+    ("diffusion", False, "D (px²/frame^α)"),
+    ("diffusion", True, "D (µm²/s^α)"),
+    ("duration", False, "Duration (frames)"),
+    ("duration", True, "Duration (s)"),
+    ("path_length", False, "Path length (px)"),
+    ("path_length", True, "Path length (µm)"),
+    ("displacement", False, "Net displacement (px)"),
+    ("displacement", True, "Net displacement (µm)"),
+    ("lag", False, "Lag (frames)"),
+    ("lag", True, "Lag (s)"),
+    ("alpha", False, "α"),
+    ("alpha", True, "α"),
+])
+def test_msd_axis_kinds(kind, physical, expected):
+    cal = Calibration(pixel_size_nm=100, frame_interval_s=0.5) if physical else Calibration()
+    assert theme.axis_label(kind, cal) == expected

@@ -77,6 +77,13 @@ def axis_label(kind: str, calibration: Calibration) -> str:
         "length": "Distance (µm)" if physical else "Distance (px)",
         "msd": "MSD (µm²)" if physical else "MSD (px²)",
         "intensity": "Intensity (a.u.)",
+        "speed": "Speed (µm/s)" if physical else "Speed (px/frame)",
+        "diffusion": "D (µm²/s^α)" if physical else "D (px²/frame^α)",
+        "duration": "Duration (s)" if physical else "Duration (frames)",
+        "path_length": "Path length (µm)" if physical else "Path length (px)",
+        "displacement": "Net displacement (µm)" if physical else "Net displacement (px)",
+        "alpha": "α",
+        "lag": "Lag (s)" if physical else "Lag (frames)",
     }
     if kind not in labels:
         raise ValueError(f"unknown axis kind '{kind}'; choose one of: {', '.join(labels)}")
