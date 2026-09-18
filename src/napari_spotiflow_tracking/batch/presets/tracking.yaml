@@ -12,3 +12,5 @@ tracking:
   search_range: 5.0
   memory: 3
   min_track_length: 5
+analyses:
+  msd: {}
