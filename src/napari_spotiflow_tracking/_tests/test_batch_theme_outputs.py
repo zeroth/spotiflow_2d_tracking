@@ -156,8 +156,8 @@ def test_save_table_creates_parent(tmp_path):
     ("displacement", True, "Net displacement (µm)"),
     ("lag", False, "Lag (frames)"),
     ("lag", True, "Lag (s)"),
-    ("alpha", False, "α"),
-    ("alpha", True, "α"),
+    ("alpha", False, "Scaling exponent α"),
+    ("alpha", True, "Scaling exponent α"),
 ])
 def test_msd_axis_kinds(kind, physical, expected):
     cal = Calibration(pixel_size_nm=100, frame_interval_s=0.5) if physical else Calibration()

@@ -228,8 +228,8 @@ def plot_msd_combined(
         if len(curves):
             ax.set_xscale("log")
             ax.set_yscale("log")
-        ax.set_xlabel(f"Lag time ({units.time_unit})", color="black")
-        ax.set_ylabel(f"MSD ({units.msd_unit})", color="black")
+        ax.set_xlabel(theme.axis_label("lag", units.calibration), color="black")
+        ax.set_ylabel(theme.axis_label("msd", units.calibration), color="black")
         ax.set_title(f"MSD — {len(fits)} tracks · {units.describe()}", color="black")
         if fit_label:
             ax.annotate(fit_label, xy=(0.02, 0.97), xycoords="axes fraction",
@@ -529,8 +529,8 @@ def plot_d_vs_alpha(
                             path_effects=[pe.withStroke(linewidth=5.0,
                                                         foreground="white")])
 
-        ax.set_xlabel("Scaling exponent α", color="black")
-        ax.set_ylabel(f"D ({units.d_unit})", color="black")
+        ax.set_xlabel(theme.axis_label("alpha", units.calibration), color="black")
+        ax.set_ylabel(theme.axis_label("diffusion", units.calibration), color="black")
         ax_top.set_ylabel("# tracks", color="black", fontsize=_FONT_ANNOT)
         ax_right.set_xlabel("# tracks", color="black", fontsize=_FONT_ANNOT)
         ax_top.set_title(f"D vs α — {len(valid)} tracks", color="black")

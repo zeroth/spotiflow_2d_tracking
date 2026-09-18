@@ -82,7 +82,7 @@ def axis_label(kind: str, calibration: Calibration) -> str:
         "duration": "Duration (s)" if physical else "Duration (frames)",
         "path_length": "Path length (µm)" if physical else "Path length (px)",
         "displacement": "Net displacement (µm)" if physical else "Net displacement (px)",
-        "alpha": "α",
+        "alpha": "Scaling exponent α",
         "lag": "Lag (s)" if physical else "Lag (frames)",
     }
     if kind not in labels:

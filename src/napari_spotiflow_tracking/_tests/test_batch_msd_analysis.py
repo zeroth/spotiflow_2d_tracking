@@ -163,6 +163,41 @@ def test_figures_respect_output_formats(tmp_path):
     assert (msd_dir / "motility_classes.svg").exists()
 
 
+def test_figures_only_run_skips_track_table(tmp_path):
+    """A figures-only run must not build (or write) track_analysis.csv."""
+    synthetic_movie(tmp_path / "g" / "m.tif")
+    cfg = msd_config(tmp_path, tmp_path / "g", tables="none",
+                     figures=["motility_classes"])
+    result = runner.run(cfg)
+    assert result.exit_code == 0
+    msd_dir = tmp_path / "out" / "g" / "m" / "msd"
+    assert (msd_dir / "motility_classes.png").exists()
+    assert not (msd_dir / "track_analysis.csv").exists()
+
+
+def test_core_figures_are_written_when_calibrated(tmp_path):
+    """Calibrated run: the only path that exercises the 4*sigma^2 subtraction
+    in plot_msd_regimes and the physical (µm, s) unit strings."""
+    synthetic_movie(tmp_path / "g" / "m.tif")
+    cfg = load_config(data={
+        "inputs": [str(tmp_path / "g")],
+        "output_dir": str(tmp_path / "out"),
+        "device": "cpu",
+        "preprocessing": {"steps": []},
+        "detection": {"method": "log"},
+        "tracking": {"enabled": True, "search_range": 3, "memory": 0,
+                     "min_track_length": 5},
+        "outputs": {"formats": ["png"], "dpi": 40},
+        "calibration": {"pixel_size_nm": 100, "frame_interval_s": 0.5},
+        "analyses": {"msd": {"max_lag": 10, "min_length": 5, "figures": CORE_FIGURES}},
+    })
+    assert runner.run(cfg).exit_code == 0
+    msd_dir = tmp_path / "out" / "g" / "m" / "msd"
+    for name in CORE_FIGURES:
+        png = msd_dir / f"{name}.png"
+        assert png.exists() and png.stat().st_size > 5000, name
+
+
 def test_empty_fits_write_no_figure(tmp_path):
     path = tmp_path / "g" / "empty.tif"
     path.parent.mkdir(parents=True)

@@ -71,15 +71,19 @@ class MsdAnalysis(Analysis):
         if not wanted:
             return record
 
-        measure_on = measure_on_for(self, settings, ctx.config)
-        image = ctx.image(measure_on) if measure_on else None
-        table = compute.track_table(tracked, image, fits, units)
-
         out_dir = ctx.analysis_dir(self.name)
-        for name, frame in (("msd_curves", curves), ("msd_fits", fits),
-                            ("track_analysis", table)):
+        for name, frame in (("msd_curves", curves), ("msd_fits", fits)):
             if select.table(name):
                 save_table(frame, out_dir / f"{name}.csv")
+
+        # track_analysis is the only output that needs the measured image and
+        # the per-track geometry table — skip building both on a figures-only
+        # (or msd_curves/msd_fits-only) run.
+        if select.table("track_analysis"):
+            measure_on = measure_on_for(self, settings, ctx.config)
+            image = ctx.image(measure_on) if measure_on else None
+            table = compute.track_table(tracked, image, fits, units)
+            save_table(table, out_dir / "track_analysis.csv")
 
         formats, dpi = ctx.config.outputs.formats, ctx.config.outputs.dpi
         if select.figure("msd_combined"):
