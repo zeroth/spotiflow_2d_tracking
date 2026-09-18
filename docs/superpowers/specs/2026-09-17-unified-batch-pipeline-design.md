@@ -362,8 +362,21 @@ Each phase gets its own implementation plan and ends usable.
 1. **Core** — config, presets, inputs, stages (all preprocessing steps, both
    detectors, optional fitting/masks, tracking), runner, outputs, theme; CLI
    `run`, `validate`, `list-outputs`, `init-config`. Usable for detect + track.
-2. **bleaching** analysis.
-3. **papa** analysis.
-4. **msd** analysis + slow regression test.
-5. Group summaries and cross-group comparisons for all analyses; MkDocs page
-   (config reference, presets, output catalogues, bleaching parameter guide).
+   **Done** (branch `feat/batch-pipeline`).
+2. **msd** analysis + slow regression test against `bulk_track_analysis.py`,
+   **together with** its group summaries and cross-group comparison. MSD is
+   what gets compared between conditions, so the comparison layer (pooled
+   group figures, overlaid group distributions, class-share bars, shared
+   axis ranges) is built once here, against a real analysis, rather than
+   retrofitted. Replaces the old script's `--compare` mode: conditions are
+   the run's `inputs` groups instead of sub-folders of a parent, and
+   `skip_existing` lets already-processed folders be re-summarised without
+   re-detecting.
+3. **papa** analysis, with its group and comparison hooks on the layer
+   phase 2 established.
+4. **bleaching** analysis, likewise.
+5. MkDocs page (config reference, presets, output catalogues, bleaching
+   parameter guide) and retirement notes for the old scripts.
+
+Order changed on 2026-09-18 (was: bleaching, papa, msd, then comparisons) at
+the user's request — MSD plus comparison first, then PAPA, then bleaching.
