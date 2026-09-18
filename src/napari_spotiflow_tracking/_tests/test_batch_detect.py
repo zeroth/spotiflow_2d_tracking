@@ -160,21 +160,32 @@ def test_scipy_and_torchimize_fits_agree_closely():
     """Same support and border rule (patch_radius = fit.window on both), so the
     backends must agree on which spots are NaN, and fit values must be close.
     Not bit-identical: the scipy fit bounds its search, the batched LM does not.
+
+    One of the three synthetic spots sits at row 1, inside the ``window``-pixel
+    border margin (window=2, so rows/cols 0-1 and 46-47 are excluded — see
+    ``_extract_crops_vec``). It has a real, strong Gaussian peak there (not a
+    flat patch), so a scipy backend that forgot the border rule would still
+    fit it successfully instead of leaving it NaN like the batched path always
+    does — making the NaN-parity check below fail, rather than pass vacuously
+    the way it would if every spot were far from an edge.
     """
     pytest.importorskip("torchimize")
     from napari_spotiflow_tracking._fitting import fit_all_frames_gpu
 
-    stack = _blob_stack(n_frames=2)
-    spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
-    fit = FitSettings(enabled=True)
-    df = spots.rename(columns={"frame": "time"})
+    win = 2
+    stack = _blob_stack(n_frames=1, size=48, centres=((12, 12), (34, 30), (1, 24)))
+    df = pd.DataFrame({"time": [0, 0, 0], "y": [12.0, 34.0, 1.0], "x": [12.0, 30.0, 24.0]})
+    fit = FitSettings(enabled=True, window=win)
 
-    gpu = fit_all_frames_gpu(stack, df, win=fit.window, device="cpu")
+    gpu = fit_all_frames_gpu(stack, df, win=win, device="cpu")
     cpu = detect._fit_frames_scipy(stack, df, fit)
 
     gpu_nan = gpu[["x_fit", "y_fit"]].isna().any(axis=1)
     cpu_nan = cpu[["x_fit", "y_fit"]].isna().any(axis=1)
     assert (gpu_nan == cpu_nan).all()
+    # The border rule must actually have been exercised: some spots NaN, some not.
+    assert cpu_nan.any() and not cpu_nan.all()
+    assert cpu_nan.iloc[2]  # the row-1 spot specifically, not some other one
 
     ok = ~gpu_nan
     assert ok.any()
@@ -182,6 +193,35 @@ def test_scipy_and_torchimize_fits_agree_closely():
     assert np.allclose(gpu.loc[ok, "y_fit"], cpu.loc[ok, "y_fit"], atol=0.25)
     assert np.allclose(gpu.loc[ok, "sigma_x"], cpu.loc[ok, "sigma_x"], rtol=0.2)
     assert np.allclose(gpu.loc[ok, "sigma_y"], cpu.loc[ok, "sigma_y"], rtol=0.2)
+
+
+def test_scipy_fit_requests_patch_radius_equal_to_window(monkeypatch):
+    """Pins the exact line the support finding is about: the scipy backend
+    must call _fit_single_spot_scipy with patch_radius == fit.window (matching
+    the batched path's win), not fit.window * 2. A tolerance-based comparison
+    on well-separated, low-noise synthetic blobs can pass either way (5x5 and
+    9x9 patches fit nearly identical Gaussians there), so this asserts the
+    argument directly instead of inferring it from fitted values.
+    """
+    import napari_spotiflow_tracking._fitting as fitting_module
+
+    real_fit_single_spot_scipy = fitting_module._fit_single_spot_scipy
+    captured_radii = []
+
+    def spy(image, center_yx, patch_radius):
+        captured_radii.append(patch_radius)
+        return real_fit_single_spot_scipy(image, center_yx, patch_radius)
+
+    monkeypatch.setattr(fitting_module, "_fit_single_spot_scipy", spy)
+
+    stack = _blob_stack(n_frames=2)
+    spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
+    fit = FitSettings(enabled=True, window=2)
+    df = spots.rename(columns={"frame": "time"})
+    detect._fit_frames_scipy(stack, df, fit)
+
+    assert captured_radii, "expected at least one scipy fit call"
+    assert all(radius == fit.window for radius in captured_radii)
 
 
 def test_fit_empty_spots_scipy_path_returns_empty_mask():
