@@ -1,0 +1,38 @@
+# One movie, photobleaching-step settings.
+#
+#   spotiflow-batch validate examples/batch/bleaching_single_movie.yaml
+#   spotiflow-batch run examples/batch/bleaching_single_movie.yaml
+#
+# The `bleaching` preset supplies subtract mean -> blur 1 and tight linking
+# (search 3, memory 10, min_track_length 10), so this file only names the
+# input, the output and what differs.
+
+modality: bleaching
+
+# A single movie works as an input; the group is named after the file unless
+# you give a label.
+inputs:
+  - {path: 'D:/Data/field2.tif', label: field2}
+output_dir: 'D:/Results/field2_bleaching'
+
+device: cuda
+
+# Intensities are read from the raw movie: the mean subtraction above clips
+# everything below the stack mean to 0, which would flatten the background a
+# bleaching trace steps down to.
+measure_on: raw
+
+detection:
+  method: spotiflow
+  spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}
+
+tracking:
+  enabled: true
+  search_range: 3.0
+  memory: 10
+  min_track_length: 10
+
+outputs:
+  formats: [png]
+  dpi: 300
+  save_preprocessed: false

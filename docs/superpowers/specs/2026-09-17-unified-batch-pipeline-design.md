@@ -96,15 +96,31 @@ Python ≥ 3.9 (`from __future__ import annotations`, no `match`).
 ```python
 class Analysis(Protocol):
     name: str                                  # "msd", "papa", "bleaching"
-    config_type: type                          # dataclass for its config section
+    def default_settings(self) -> dict: ...        # merged under the user's section; "enabled: false" disables
     requires_tracks: bool
     default_measure_on: str                    # "raw" | "preprocessed" | "none"
     catalogue: list[OutputSpec]                # name, level, kind, description
 
-    def run_movie(self, ctx: MovieContext, cfg) -> dict: ...          # summary record
-    def summarize_group(self, group: str, movie_dirs: list[Path], cfg, out: Path) -> None: ...
-    def compare_groups(self, groups: dict[str, list[Path]], cfg, out: Path) -> None: ...
+    def validate(self, settings: dict) -> list[str]: ...          # problems, as strings
+    def run_movie(self, ctx: MovieContext, settings: dict, select: OutputSelector) -> dict: ...  # summary record
+    def summarize_group(self, group: str, movie_dirs: list[Path], settings: dict,
+                        select: OutputSelector, out_dir: Path, cfg: PipelineConfig) -> None: ...
+    def compare_groups(self, groups: dict[str, list[Path]], settings: dict,
+                       select: OutputSelector, out_dir: Path, cfg: PipelineConfig) -> None: ...
 ```
+
+`settings` is the analysis section merged over `default_settings()` (with
+`enabled` removed); `select` answers which catalogue figures/tables the user
+asked for. Group and comparison hooks also get the whole `cfg` for
+`outputs.formats`/`dpi`, `calibration` and group colours; groups whose movies
+all failed are left out (with a logged warning), so hooks take colours from
+`theme.group_colors([input_label(s) for s in cfg.inputs], color_pins(cfg))`
+to keep palette slots stable.
+
+`measure_on_for(analysis, settings, cfg)` resolves the movie an analysis
+samples: `None` when `default_measure_on == "none"`, else
+`analyses.<name>.measure_on` when set, else the top-level `measure_on`.
+Validation rejects an `analyses.<name>.measure_on` other than raw/preprocessed.
 
 `OutputSpec(name, level: movie|group|comparison, kind: figure|table, description)`.
 Group and comparison hooks read the per-movie tables from disk, so they also
@@ -147,16 +163,16 @@ preprocessing:
   steps:                      # applied in order; [] = raw
     - crop: {y: [0, 263], x: [0, 263]}
     - walking_average: {window: 4}
-    - subtract: {value: mean}          # add | subtract | multiply | divide; number or "mean"
-    - background: {method: high_pass, sigma: 10}   # or {method: erosion, radius: 5}
-    - n2v: {epochs: 10, patch: 64}
+    - subtract: {value: mean}          # add | subtract; number or "mean"
+    - background: {method: high_pass, sigma: 10}   # or {method: erosion, disk_size: 5}
+    - n2v: {n_epochs: 10, patch_size: 64}
     - gaussian_blur: {sigma: 1.0}
 
 detection:
   method: spotiflow           # spotiflow | log
   spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}   # model: name or folder
   log: {min_sigma: 2, max_sigma: 10, num_sigma: 10, threshold: 0.09}
-  fit: {enabled: false, backend: auto, window: 2, max_radius: 2.0}
+  fit: {enabled: false, window: 2, max_radius: 2.0}   # needs torchimize
 
 tracking:
   enabled: true
@@ -304,8 +320,9 @@ bound of `unit_range[1]`.
   unaffected.
 - Group palette — fixed categorical order, assigned in `inputs` order;
   `inputs[].color` pins a colour.
-- Semantic palettes — motility classes, step counts (monomer/dimer/trimer),
-  PAPA groups — identical in every figure.
+- Semantic palettes — step counts, motility classes and PAPA groups share
+  #56b4e9 / #eda100 / #4a3aa7 (+ #7f7f7f unclassified); tab:orange/tab:green
+  are not used because they collapse under protanopia.
 - Helpers — axis labels with units from `calibration`, shared-y figure grids.
 
 A unit test checks the palettes for colour-vision-deficiency separation.
@@ -317,6 +334,8 @@ A unit test checks the palettes for colour-vision-deficiency separation.
 - A failing group/comparison hook: logged, run continues.
 - Exit code non-zero if any movie or hook failed; 2 for config errors.
 - `validate` subcommand runs steps 1–2 of the data flow only.
+- `skip_existing`: a movie with `movie_status.json` is skipped; otherwise
+  existing `spots.csv`/`tracks.csv` are reused and analyses re-run.
 
 ## Testing
 
@@ -343,8 +362,21 @@ Each phase gets its own implementation plan and ends usable.
 1. **Core** — config, presets, inputs, stages (all preprocessing steps, both
    detectors, optional fitting/masks, tracking), runner, outputs, theme; CLI
    `run`, `validate`, `list-outputs`, `init-config`. Usable for detect + track.
-2. **bleaching** analysis.
-3. **papa** analysis.
-4. **msd** analysis + slow regression test.
-5. Group summaries and cross-group comparisons for all analyses; MkDocs page
-   (config reference, presets, output catalogues, bleaching parameter guide).
+   **Done** (branch `feat/batch-pipeline`).
+2. **msd** analysis + slow regression test against `bulk_track_analysis.py`,
+   **together with** its group summaries and cross-group comparison. MSD is
+   what gets compared between conditions, so the comparison layer (pooled
+   group figures, overlaid group distributions, class-share bars, shared
+   axis ranges) is built once here, against a real analysis, rather than
+   retrofitted. Replaces the old script's `--compare` mode: conditions are
+   the run's `inputs` groups instead of sub-folders of a parent, and
+   `skip_existing` lets already-processed folders be re-summarised without
+   re-detecting.
+3. **papa** analysis, with its group and comparison hooks on the layer
+   phase 2 established.
+4. **bleaching** analysis, likewise.
+5. MkDocs page (config reference, presets, output catalogues, bleaching
+   parameter guide) and retirement notes for the old scripts.
+
+Order changed on 2026-09-18 (was: bleaching, papa, msd, then comparisons) at
+the user's request — MSD plus comparison first, then PAPA, then bleaching.

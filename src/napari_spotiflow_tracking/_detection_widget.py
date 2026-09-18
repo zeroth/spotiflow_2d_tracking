@@ -714,6 +714,19 @@ class DetectionWidget(QWidget):
         self._status_label.setText(f"Mask generated ({n_regions} regions).")
 
     def _on_gpu_fit_finished(self, mask, props_df):
+        # GpuFitMaskWorker is a plain (unparented) QThread, so if the viewer
+        # was closed while it was still running (widget/test torn down
+        # before this async result arrived), it keeps running and this slot
+        # still fires via its queued signal. `Window.close()` does
+        # `del self._qt_window`, so its absence means the viewer is gone —
+        # touching it here would resurrect stale Qt state (e.g. a dims
+        # widget already mid-teardown) instead of failing cleanly. Same
+        # `hasattr` check napari's own test fixtures use to detect a closed
+        # viewer (napari/utils/_testsupport.py).
+        if not hasattr(self.viewer.window, "_qt_window"):
+            self._gpu_pending_points_layer = None
+            self._gpu_fit_worker = None
+            return
         mask_layer = self.viewer.add_labels(
             np.asarray(mask), name="Spot Masks", opacity=0.4,
         )

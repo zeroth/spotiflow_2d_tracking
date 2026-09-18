@@ -1,0 +1,52 @@
+# Two conditions, detection + tracking, physical units.
+#
+#   spotiflow-batch validate examples/batch/two_conditions.yaml
+#   spotiflow-batch run examples/batch/two_conditions.yaml
+#
+# Edit the paths, then the numbers. Anything left out falls back to the
+# `tracking` preset (walking average 4 -> subtract mean -> blur 1; search 5,
+# memory 3), and anything here can be overridden per run, e.g.
+#   spotiflow-batch run examples/batch/two_conditions.yaml --set tracking.memory=5
+
+modality: tracking
+
+# One entry per condition. Each becomes a group: its own output folder, its own
+# colour in every figure, and its own summary. `label` names it; without one the
+# folder name is used.
+inputs:
+  - {path: 'D:/Data/control', label: Control}
+  - {path: 'D:/Data/drug_10uM', label: Drug 10 µM}
+output_dir: 'D:/Results/2026-09-18_drug_screen'
+
+# Resume an interrupted run: finished movies are skipped, half-done ones reuse
+# their spots and tracks.
+skip_existing: true
+
+device: cuda            # falls back to cpu with a warning when no GPU is present
+
+# Both values together switch lengths to µm and times to s. Leave them null to
+# stay in pixels and frames.
+calibration:
+  pixel_size_nm: 156
+  frame_interval_s: 0.09
+
+# Applied top to bottom, exactly like the Pre-Processing widget.
+preprocessing:
+  steps:
+    - walking_average: {window: 4}
+    - subtract: {value: mean}
+    - gaussian_blur: {sigma: 1.0}
+
+detection:
+  method: spotiflow
+  spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}
+
+tracking:
+  enabled: true
+  search_range: 5.0
+  memory: 3
+  min_track_length: 5
+
+outputs:
+  formats: [png, svg]
+  dpi: 300

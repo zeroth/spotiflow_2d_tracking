@@ -1,0 +1,8 @@
+# PAPA preset: the defaults of scripts/papa_analysis.py (no preprocessing, no tracking).
+preprocessing:
+  steps: []
+detection:
+  method: spotiflow
+  spotiflow: {model: general, prob_thresh: null, min_distance: 1}
+tracking:
+  enabled: false
