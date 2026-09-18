@@ -57,6 +57,7 @@ One batch pipeline, inside the package, driven by a YAML config:
 | Existing scripts | Left untouched |
 | Internals | Analysis plugins + dataclass config (no new framework) |
 | Fitting/masks | On by default; torchimize when importable, else the per-frame scipy fitter; mask.tif written unless save_masks is false (user, 2026-09-18) |
+| Minimum track length | Per analysis (e.g. msd.min_length), never at tracking time — tracks.csv keeps every linked track (user, 2026-09-18) |
 
 ## Architecture
 
@@ -179,7 +180,6 @@ tracking:
   enabled: true
   search_range: 3
   memory: 10
-  min_track_length: 5
 
 measure_on: raw
 

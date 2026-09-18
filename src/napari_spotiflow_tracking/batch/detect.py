@@ -171,6 +171,13 @@ def fit_spots(stack: np.ndarray, spots: pd.DataFrame, fit: FitSettings, device: 
 
 
 def track_spots(spots: pd.DataFrame, tracking: TrackingSettings) -> pd.DataFrame:
+    """Link spots frame-to-frame with trackpy and return every linked track.
+
+    ``tracks.csv`` is written unfiltered: nothing is dropped by length here,
+    so lowering a minimum later never needs a re-detect/re-track. Each
+    analysis applies its own minimum length instead (e.g. the ``msd``
+    analysis's ``min_length``).
+    """
     if len(spots) == 0:
         return spots.assign(particle=pd.Series(dtype=np.int64))
     tracked = track_blobs(spots[SPOT_COLUMNS].copy(), search_range=tracking.search_range,
@@ -178,6 +185,4 @@ def track_spots(spots: pd.DataFrame, tracking: TrackingSettings) -> pd.DataFrame
     extra = spots.drop(columns=SPOT_COLUMNS)
     if len(extra.columns):
         tracked = tracked.join(extra)  # trackpy keeps the input index
-    lengths = tracked.groupby("particle")["frame"].transform("size")
-    tracked = tracked[lengths >= tracking.min_track_length]
     return tracked.sort_values(["particle", "frame"]).reset_index(drop=True)

@@ -33,8 +33,7 @@ def two_group_config(tmp_path, groups, calibration="default"):
         "device": "cpu",
         "preprocessing": {"steps": []},
         "detection": {"method": "log"},
-        "tracking": {"enabled": True, "search_range": 3, "memory": 0,
-                     "min_track_length": 5},
+        "tracking": {"enabled": True, "search_range": 3, "memory": 0},
         "outputs": {"formats": ["png"], "dpi": 40},
         "analyses": {"msd": {"max_lag": 10, "min_length": 5}},
     }

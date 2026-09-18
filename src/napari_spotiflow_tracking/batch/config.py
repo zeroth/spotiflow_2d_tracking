@@ -89,7 +89,6 @@ class TrackingSettings:
     enabled: bool = True
     search_range: float = 3.0
     memory: int = 10
-    min_track_length: int = 5
 
 
 @dataclass

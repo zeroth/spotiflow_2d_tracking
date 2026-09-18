@@ -47,7 +47,6 @@ tracking:
   enabled: true
   search_range: 5.0
   memory: 3
-  min_track_length: 5
 
 outputs:
   formats: [png, svg]

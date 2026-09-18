@@ -169,7 +169,6 @@ tracking:
   enabled: true
   search_range: 3
   memory: 10
-  min_track_length: 5
 
 measure_on: raw               # raw | preprocessed — where intensities are read
 
@@ -236,6 +235,11 @@ issue), so it needs no extra install to be on by default. The two backends produ
 the same schema and closely matching values — not bit-identical, since the scipy
 fit bounds its search while the batched fit does not — and the fallback is slower
 (roughly 5x on one 15,457-spot, 827-frame movie in testing) but not prohibitively so.
+
+`tracks.csv` holds every track trackpy links, however short — nothing is dropped
+by length at write time. Each analysis applies its own minimum instead (e.g.
+`analyses.msd.min_length`), so lowering a threshold later is a re-analysis, not
+a re-detect/re-track.
 
 One movie failing does not stop the run: its traceback goes to `run.log`, its
 row reads `FAIL`, and the rest carry on. The command exits 0 when everything

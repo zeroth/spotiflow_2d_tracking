@@ -69,7 +69,7 @@ def _cfg(tmp_path, inputs, **extra):
         "device": "cpu",
         "preprocessing": {"steps": []},
         "detection": {"method": "log"},
-        "tracking": {"enabled": True, "search_range": 3, "memory": 0, "min_track_length": 3},
+        "tracking": {"enabled": True, "search_range": 3, "memory": 0},
         "outputs": {"formats": ["png"], "dpi": 40},
         "analyses": {"recorder": {}},
     }

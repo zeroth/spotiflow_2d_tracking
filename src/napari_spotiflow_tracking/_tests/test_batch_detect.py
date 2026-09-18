@@ -67,20 +67,32 @@ def test_load_detector_returns_none_for_log():
     assert detect.load_detector(DetectionSettings(method="log"), "cpu") is None
 
 
-def test_tracking_links_filters_and_keeps_columns():
+def test_tracking_links_and_keeps_columns():
     rows = []
     for t in range(5):
         rows.append({"frame": t, "y": 10.0, "x": 10.0 + 0.5 * t, "amp": 1.0 + t})
         rows.append({"frame": t, "y": 40.0, "x": 40.0, "amp": 9.0})
-    rows.append({"frame": 0, "y": 80.0, "x": 80.0, "amp": 0.0})  # one-frame spot
     spots = pd.DataFrame(rows)
-    tracks = detect.track_spots(spots, TrackingSettings(search_range=3, memory=0,
-                                                       min_track_length=3))
+    tracks = detect.track_spots(spots, TrackingSettings(search_range=3, memory=0))
     assert tracks["particle"].nunique() == 2
     assert len(tracks) == 10
     assert "amp" in tracks.columns
     first = tracks[tracks.particle == tracks.particle.iloc[0]]
     assert first["frame"].tolist() == [0, 1, 2, 3, 4]
+
+
+def test_tracking_keeps_short_tracks():
+    """tracks.csv is unfiltered: a one-frame spot survives as its own track."""
+    rows = []
+    for t in range(5):
+        rows.append({"frame": t, "y": 10.0, "x": 10.0 + 0.5 * t, "amp": 1.0})
+    rows.append({"frame": 0, "y": 80.0, "x": 80.0, "amp": 0.0})   # one-frame spot
+    tracks = detect.track_spots(pd.DataFrame(rows),
+                                TrackingSettings(search_range=3, memory=0))
+    assert tracks["particle"].nunique() == 2
+    assert len(tracks) == 6
+    lengths = sorted(tracks.groupby("particle").size())
+    assert lengths == [1, 5]
 
 
 def test_tracking_empty_spots():

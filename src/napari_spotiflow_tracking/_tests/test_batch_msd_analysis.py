@@ -38,8 +38,7 @@ def msd_config(tmp_path, movie_dir, **analysis_settings):
         "device": "cpu",
         "preprocessing": {"steps": []},
         "detection": {"method": "log"},
-        "tracking": {"enabled": True, "search_range": 3, "memory": 0,
-                     "min_track_length": 5},
+        "tracking": {"enabled": True, "search_range": 3, "memory": 0},
         "outputs": {"formats": ["png"], "dpi": 40},
         "analyses": {"msd": settings},
     })
@@ -175,6 +174,19 @@ def test_figures_only_run_skips_track_table(tmp_path):
     assert not (msd_dir / "track_analysis.csv").exists()
 
 
+def test_short_tracks_reach_tracks_csv_but_not_the_fits(tmp_path):
+    """The msd cut applies to the analysis, not to what tracking wrote."""
+    synthetic_movie(tmp_path / "g" / "m.tif", n_frames=40, n_spots=6, seed=11)
+    cfg = msd_config(tmp_path, tmp_path / "g", min_length=20)
+    assert runner.run(cfg).exit_code == 0
+    movie = tmp_path / "out" / "g" / "m"
+    tracks = pd.read_csv(movie / "tracks.csv")
+    fits = pd.read_csv(movie / "msd" / "msd_fits.csv")
+    lengths = tracks.groupby("particle").size()
+    assert (lengths < 20).any()                     # short tracks are on disk
+    assert set(fits["track_id"]) <= set(lengths[lengths >= 20].index)
+
+
 def test_core_figures_are_written_when_calibrated(tmp_path):
     """Calibrated run: the only path that exercises the 4*sigma^2 subtraction
     in plot_msd_regimes and the physical (µm, s) unit strings."""
@@ -185,8 +197,7 @@ def test_core_figures_are_written_when_calibrated(tmp_path):
         "device": "cpu",
         "preprocessing": {"steps": []},
         "detection": {"method": "log"},
-        "tracking": {"enabled": True, "search_range": 3, "memory": 0,
-                     "min_track_length": 5},
+        "tracking": {"enabled": True, "search_range": 3, "memory": 0},
         "outputs": {"formats": ["png"], "dpi": 40},
         "calibration": {"pixel_size_nm": 100, "frame_interval_s": 0.5},
         "analyses": {"msd": {"max_lag": 10, "min_length": 5, "figures": CORE_FIGURES}},

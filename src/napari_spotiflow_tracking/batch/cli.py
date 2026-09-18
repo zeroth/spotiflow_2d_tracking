@@ -26,7 +26,8 @@ SECTION_HELP = {
     "detection": "method: spotiflow or log. fit.enabled (on by default) adds a 2D "
                  "Gaussian fit and spot masks: torchimize when available, else the "
                  "scipy fallback.",
-    "tracking": "trackpy linking; tracks shorter than min_track_length are dropped.",
+    "tracking": "trackpy linking; every linked track is written, and each analysis "
+                "applies its own minimum length.",
     "measure_on": "raw or preprocessed: the movie analyses read intensities from, "
                   "unless an analysis overrides it.",
     "outputs": "formats: any of png, pdf, svg.",
