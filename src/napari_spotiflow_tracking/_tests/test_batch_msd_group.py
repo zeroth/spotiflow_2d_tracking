@@ -170,3 +170,52 @@ def test_group_summary_recomputes_duration_when_duration_s_missing(tmp_path):
     assert props_out["_dur"].max() == pytest.approx(expected_max)
     # Not the raw frame count -- that would be the (wrong) pre-fix value.
     assert props_out["_dur"].max() != pytest.approx(max_length)
+
+
+def test_comparison_written_for_two_groups(tmp_path):
+    drifting_movie(tmp_path / "ctrl" / "m1.tif", drift=0.2, seed=6)
+    drifting_movie(tmp_path / "drug" / "m1.tif", drift=1.5, seed=7)
+    cfg = two_group_config(tmp_path, [("Control", tmp_path / "ctrl"),
+                                      ("Drug", tmp_path / "drug")])
+    assert runner.run(cfg).exit_code == 0
+    comparison = tmp_path / "out" / "_comparison" / "msd"
+    table = pd.read_csv(comparison / "comparison_summary.csv")
+    assert set(table["group"]) == {"Control", "Drug"}
+    written = {p.stem for p in comparison.glob("*.png")}
+    assert {"motility_comparison", "length_comparison", "speed_comparison"} <= written
+    assert {"length_comparison_density", "speed_comparison_density"} <= written
+    assert (comparison / "harmonised").is_dir()
+    harmonised = {p.stem for p in (comparison / "harmonised").glob("*.png")}
+    assert any(name.startswith("Control_") for name in harmonised)
+    assert any(name.startswith("Drug_") for name in harmonised)
+
+
+def test_no_comparison_for_a_single_group(tmp_path):
+    drifting_movie(tmp_path / "ctrl" / "m1.tif", seed=8)
+    runner.run(two_group_config(tmp_path, [("Control", tmp_path / "ctrl")]))
+    assert not (tmp_path / "out" / "_comparison").exists()
+
+
+def test_group_colours_follow_input_order(tmp_path):
+    """A group whose movies all failed must not shift the others' colours."""
+    from napari_spotiflow_tracking.batch import theme
+    from napari_spotiflow_tracking.batch.inputs import color_pins, input_label
+    drifting_movie(tmp_path / "ctrl" / "m1.tif", seed=9)
+    drifting_movie(tmp_path / "drug" / "m1.tif", seed=10)
+    cfg = two_group_config(tmp_path, [("Control", tmp_path / "ctrl"),
+                                      ("Drug", tmp_path / "drug")])
+    colors = theme.group_colors([input_label(s) for s in cfg.inputs], color_pins(cfg))
+    assert colors["Control"] == theme.GROUP_COLORS[0]
+    assert colors["Drug"] == theme.GROUP_COLORS[1]
+
+
+def test_comparison_figure_selection(tmp_path):
+    drifting_movie(tmp_path / "ctrl" / "m1.tif", seed=11)
+    drifting_movie(tmp_path / "drug" / "m1.tif", seed=12)
+    cfg = two_group_config(tmp_path, [("Control", tmp_path / "ctrl"),
+                                      ("Drug", tmp_path / "drug")])
+    cfg.analyses["msd"]["figures"] = ["motility_comparison"]
+    runner.run(cfg)
+    comparison = tmp_path / "out" / "_comparison" / "msd"
+    assert (comparison / "motility_comparison.png").exists()
+    assert not (comparison / "length_comparison.png").exists()

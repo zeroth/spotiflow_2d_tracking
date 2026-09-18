@@ -2,16 +2,24 @@
 
 Ported from scripts/bulk_track_analysis.py: run_movie from analyze_folder,
 summarize_group from write_run_summary, compare_groups from
-write_group_comparison.
+write_group_comparison (L2562) and _write_group_joints (L2681).
 """
 
 from __future__ import annotations
 
+import logging
+
+import numpy as np
+import pandas as pd
+
 from ... import theme
+from ...inputs import color_pins, input_label
 from ...outputs import OutputSpec, save_table
 from ..base import Analysis, measure_on_for
-from . import compute, figures_group, figures_movie
+from . import compute, figures_compare, figures_group, figures_movie
 from .units import Units
+
+log = logging.getLogger("napari_spotiflow_tracking.batch")
 
 CATALOGUE = (
     OutputSpec("msd_curves", "movie", "table", "Per-track MSD per lag, with SEM and pair count"),
@@ -52,6 +60,39 @@ CATALOGUE = (
                "Group-level velocity distribution of directed tracks"),
     OutputSpec("directed_displacement_vs_velocity_summary", "group", "figure",
                "Group-level run length vs velocity, directed tracks only"),
+    OutputSpec("comparison_summary", "comparison", "table",
+               "Per-group, per-movie motility class counts"),
+    OutputSpec("motility_comparison", "comparison", "figure",
+               "Motility class share per group, as stacked bars"),
+    OutputSpec("length_comparison", "comparison", "figure",
+               "Group track-duration distributions overlaid, raw counts"),
+    OutputSpec("length_comparison_density", "comparison", "figure",
+               "Group track-duration distributions overlaid, as a fraction "
+               "of each group's tracks"),
+    OutputSpec("speed_comparison", "comparison", "figure",
+               "Group mean-speed distributions overlaid, raw counts"),
+    OutputSpec("speed_comparison_density", "comparison", "figure",
+               "Group mean-speed distributions overlaid, as a fraction of "
+               "each group's tracks"),
+    OutputSpec("directed_displacement_comparison", "comparison", "figure",
+               "Group directed-track run-length distributions overlaid, raw counts"),
+    OutputSpec("directed_displacement_comparison_density", "comparison", "figure",
+               "Group directed-track run-length distributions overlaid, as a "
+               "fraction of each group's tracks"),
+    OutputSpec("directed_velocity_comparison", "comparison", "figure",
+               "Group directed-track velocity distributions overlaid, raw counts"),
+    OutputSpec("directed_velocity_comparison_density", "comparison", "figure",
+               "Group directed-track velocity distributions overlaid, as a "
+               "fraction of each group's tracks"),
+    OutputSpec("d_vs_alpha_comparison", "comparison", "figure",
+               "D vs alpha joint distribution, every group coloured and overlaid"),
+    OutputSpec("length_vs_speed_comparison", "comparison", "figure",
+               "Track duration vs mean speed, every group coloured and overlaid"),
+    OutputSpec("directed_displacement_vs_velocity_comparison", "comparison", "figure",
+               "Directed run length vs velocity, every group coloured and overlaid"),
+    OutputSpec("harmonised", "comparison", "figure",
+               "Per-group single-condition figures on the axis range shared "
+               "by every group"),
 )
 
 _TABLE_FIGURES = (
@@ -265,3 +306,182 @@ class MsdAnalysis(Analysis):
                 "Directed run length vs velocity",
                 out_dir / "directed_displacement_vs_velocity_summary", formats, dpi,
                 color_by_class=False)
+
+    def compare_groups(self, groups, settings, select, out_dir, cfg) -> None:
+        units = Units(cfg.calibration, settings["sigma_nm"])
+        per_group = {
+            name: figures_group.read_movie_frames(dirs, settings["min_length"], units)
+            for name, dirs in groups.items()
+        }
+        per_group = {name: per_movie for name, per_movie in per_group.items() if per_movie}
+        if not per_group:
+            return
+
+        # Colours are assigned over every configured input, not just the
+        # groups that made it here -- a group whose movies all failed must
+        # not shift the survivors' colours.
+        colors = theme.group_colors(
+            [input_label(spec) for spec in cfg.inputs], color_pins(cfg))
+        drawn = [name for name in colors if name in per_group]
+        if len(drawn) > figures_compare.GROUP_COLORS_SAFE:
+            log.warning(
+                "%d groups overlaid in the comparison figures -- the group "
+                "palette is only validated for %d overlaid distributions; "
+                "past that, hues start to collide for colour-blind readers. "
+                "Prefer comparing %d at a time.",
+                len(drawn), figures_compare.GROUP_COLORS_SAFE,
+                figures_compare.GROUP_COLORS_SAFE)
+
+        formats, dpi = cfg.outputs.formats, cfg.outputs.dpi
+        harmonised_dir = out_dir / "harmonised"
+
+        if select.table("comparison_summary"):
+            rows = []
+            for name, per_movie in per_group.items():
+                for label, fits, _, _ in per_movie:
+                    counts = compute.class_counts(fits)
+                    rows.append({"group": name, "movie": label, **counts,
+                                "n_tracks": sum(counts.values())})
+            if rows:
+                save_table(pd.DataFrame(rows).fillna(0),
+                          out_dir / "comparison_summary.csv")
+
+        if select.figure("motility_comparison"):
+            counts_by_group = {}
+            for name, per_movie in per_group.items():
+                total: dict = {}
+                for _, fits, _, _ in per_movie:
+                    for cls, n in compute.class_counts(fits).items():
+                        total[cls] = total.get(cls, 0) + n
+                counts_by_group[name] = total
+            figures_compare.plot_group_motility(
+                counts_by_group, out_dir / "motility_comparison", formats, dpi)
+
+        fits_by_group = {
+            name: [(label, fits) for label, fits, _, _ in per_movie if len(fits)]
+            for name, per_movie in per_group.items()
+        }
+        props_by_group = {
+            name: [(label, props) for label, _, props, _ in per_movie
+                  if props is not None]
+            for name, per_movie in per_group.items()
+        }
+        directed_by_group = {
+            name: [(label, directed) for label, _, _, directed in per_movie
+                  if directed is not None]
+            for name, per_movie in per_group.items()
+        }
+        wants_harmonised = select.figure("harmonised")
+
+        # ── 1-D metrics: overlay in counts and density, then each group on
+        #    the shared range so the per-group figures are comparable. ──
+        one_d_metrics = (
+            ("length_comparison", props_by_group, "_dur",
+             theme.axis_label("duration", units.calibration), 1.0),
+            ("speed_comparison", props_by_group, "mean_speed",
+             f"Mean speed ({theme.unit('speed', units.calibration)})",
+             units.length_scale / units.delta),
+            ("directed_displacement_comparison", directed_by_group, "_disp",
+             f"Run length ({theme.unit('length', units.calibration)})", 1.0),
+            ("directed_velocity_comparison", directed_by_group, "_vel",
+             f"Velocity ({theme.unit('speed', units.calibration)})", 1.0),
+        )
+        for out_name, source, column, xlabel, scale in one_d_metrics:
+            density_name = f"{out_name}_density"
+            if not (select.figure(out_name) or select.figure(density_name)
+                   or wants_harmonised):
+                continue
+            metric = figures_compare.group_metric(source, column, scale)
+            if not metric:
+                continue
+            lo, hi, _, y_counts, y_density = figures_compare.shared_hist_axes(
+                {name: figures_compare.pooled_values(v) for name, v in metric.items()})
+            if select.figure(out_name):
+                figures_compare.plot_group_overlay(
+                    metric, xlabel, out_dir / out_name, formats, dpi, colors=colors)
+            if select.figure(density_name):
+                figures_compare.plot_group_overlay(
+                    metric, xlabel, out_dir / density_name, formats, dpi,
+                    colors=colors, density=True)
+            if wants_harmonised:
+                for name in metric:
+                    figures_group.plot_metric_summary(
+                        source[name], column, xlabel, scale,
+                        harmonised_dir / f"{name}_{out_name}", formats, dpi,
+                        limits=(lo, hi), y_max=y_counts, color=colors[name],
+                        title=name)
+                    figures_group.plot_metric_summary(
+                        source[name], column, xlabel, scale,
+                        harmonised_dir / f"{name}_{density_name}", formats, dpi,
+                        limits=(lo, hi), y_max=y_density, density=True,
+                        color=colors[name], title=name)
+
+        # ── joint figures: D vs alpha, length vs speed, directed run vs velocity ──
+        if select.figure("d_vs_alpha_comparison") or wants_harmonised:
+            spans = []
+            for frames in fits_by_group.values():
+                pooled_frames = [f for _, f in frames]
+                if not pooled_frames:
+                    continue
+                pooled = pd.concat(pooled_frames, ignore_index=True)
+                valid = pooled[np.isfinite(pooled["alpha"]) & (pooled["D"] > 0)]
+                if len(valid):
+                    spans.append((figures_movie._alpha_axis_limits(valid["alpha"]),
+                                 figures_movie._d_axis_limits(valid["D"])))
+            if spans:
+                da_limits = (*figures_compare.union_limits(s[0] for s in spans),
+                            *figures_compare.union_limits(s[1] for s in spans))
+                if select.figure("d_vs_alpha_comparison"):
+                    figures_compare.plot_group_joint(
+                        fits_by_group, "alpha", "D",
+                        theme.axis_label("alpha", units.calibration),
+                        theme.axis_label("diffusion", units.calibration),
+                        "D vs α", out_dir / "d_vs_alpha_comparison", formats, dpi,
+                        colors=colors, limits=da_limits, log_y=True)
+                if wants_harmonised:
+                    for name, per_movie in per_group.items():
+                        if fits_by_group.get(name):
+                            figures_group.plot_d_vs_alpha_summary(
+                                per_movie, units,
+                                harmonised_dir / f"{name}_d_vs_alpha_comparison",
+                                formats, dpi, limits=da_limits)
+
+        if select.figure("length_vs_speed_comparison") or wants_harmonised:
+            per_ls = {name: figures_group._length_speed_metrics(frames, units)
+                     for name, frames in props_by_group.items()}
+            ls_limits = figures_compare.joint_limits(per_ls, "_len", "_spd")
+            if ls_limits:
+                ls_xlabel = theme.axis_label("duration", units.calibration)
+                ls_ylabel = f"Mean speed ({theme.unit('speed', units.calibration)})"
+                if select.figure("length_vs_speed_comparison"):
+                    figures_compare.plot_group_joint(
+                        per_ls, "_len", "_spd", ls_xlabel, ls_ylabel,
+                        "Length vs speed", out_dir / "length_vs_speed_comparison",
+                        formats, dpi, colors=colors, limits=ls_limits)
+                if wants_harmonised:
+                    for name, per_movie in per_group.items():
+                        if per_ls.get(name):
+                            figures_group.plot_length_vs_speed_summary(
+                                per_movie, units,
+                                harmonised_dir / f"{name}_length_vs_speed_comparison",
+                                formats, dpi, limits=ls_limits)
+
+        dv_name = "directed_displacement_vs_velocity_comparison"
+        if select.figure(dv_name) or wants_harmonised:
+            dv_limits = figures_compare.joint_limits(directed_by_group, "_disp", "_vel")
+            if dv_limits:
+                disp_label = f"Run length ({theme.unit('length', units.calibration)})"
+                vel_label = f"Velocity ({theme.unit('speed', units.calibration)})"
+                if select.figure(dv_name):
+                    figures_compare.plot_group_joint(
+                        directed_by_group, "_disp", "_vel", disp_label, vel_label,
+                        "Directed run length vs velocity", out_dir / dv_name,
+                        formats, dpi, colors=colors, limits=dv_limits)
+                if wants_harmonised:
+                    for name, frames in directed_by_group.items():
+                        if frames:
+                            figures_group.plot_joint_summary(
+                                frames, "_disp", "_vel", disp_label, vel_label,
+                                "Directed run length vs velocity",
+                                harmonised_dir / f"{name}_{dv_name}",
+                                formats, dpi, color_by_class=False, limits=dv_limits)

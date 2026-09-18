@@ -251,7 +251,8 @@ def plot_motility_summary(per_movie: list, stem: Path, formats, dpi: int) -> Non
 
 
 def plot_d_vs_alpha_summary(per_movie: list, units: Units, stem: Path,
-                            formats, dpi: int) -> None:
+                            formats, dpi: int, *,
+                            limits: tuple | None = None) -> None:
     """Group-level D vs alpha: every track, plus one marker per movie.
 
     The movie, not the track, is the unit of replication — see
@@ -260,6 +261,11 @@ def plot_d_vs_alpha_summary(per_movie: list, units: Units, stem: Path,
     median (alpha, D); the title reports n as the number of movies. This is
     the SuperPlot convention of Lord et al., J Cell Biol 219(6):e202001064
     (2020).
+
+    ``limits`` is an ``(alpha_lo, alpha_hi, D_lo, D_hi)`` override, used by
+    the cross-group comparison so every group's figure is drawn on the axis
+    range shared by all of them, rather than each one scaling to its own
+    data.
     """
     per_file = [(label, fits) for label, fits, _, _ in per_movie if len(fits)]
     if not per_file:
@@ -302,8 +308,11 @@ def plot_d_vs_alpha_summary(per_movie: list, units: Units, stem: Path,
 
         if len(valid):
             ax.set_yscale("log")
-            d_lo, d_hi = _d_axis_limits(valid["D"])
-            a_lo, a_hi = _alpha_axis_limits(valid["alpha"])
+            if limits is not None:
+                a_lo, a_hi, d_lo, d_hi = limits
+            else:
+                d_lo, d_hi = _d_axis_limits(valid["D"])
+                a_lo, a_hi = _alpha_axis_limits(valid["alpha"])
             ax.set_ylim(d_lo, d_hi)
             ax.set_xlim(a_lo, a_hi)
             ax_top.hist(valid["alpha"], bins=np.linspace(a_lo, a_hi, 40),
@@ -382,13 +391,23 @@ def _experiment_values(frames: list, column: str, scale: float) -> list:
 
 
 def plot_metric_summary(frames: list, column: str, xlabel: str, scale: float,
-                        stem: Path, formats, dpi: int) -> None:
+                        stem: Path, formats, dpi: int, *,
+                        limits: tuple | None = None, y_max: float | None = None,
+                        density: bool = False, color: str | None = None,
+                        title: str | None = None) -> None:
     """Group-level distribution of one track property, with per-movie medians.
 
     The histogram is every track pooled; the diamonds are one per movie. The
     spread of the diamonds — not the width of the histogram — is what says
     whether the movies agree, because pooling weights each movie by however
     many tracks it happened to yield.
+
+    ``limits`` and ``y_max`` override the axis range this figure would pick
+    for itself, and ``density`` switches the y axis from counts to the
+    fraction of these tracks — the cross-group comparison passes all three
+    so every group's figure sits on the range shared by every group. ``color``
+    defaults to :data:`theme.NEUTRAL`; ``title``, when given, is prefixed to
+    the usual "n = ... movies" title (the comparison passes the group name).
     """
     groups = _experiment_values(frames, column, scale)
     if not groups:
@@ -399,10 +418,14 @@ def plot_metric_summary(frames: list, column: str, xlabel: str, scale: float,
         _grid_behind(ax)
 
         pooled = np.concatenate([v for _, v in groups])
-        lo, hi = _pct_limits(pooled)
-        ax.hist(pooled, bins=np.linspace(lo, hi, GROUP_BINS), color=theme.NEUTRAL,
-               zorder=2)
+        lo, hi = limits if limits is not None else _pct_limits(pooled)
+        weights = np.full(pooled.size, 1.0 / pooled.size) if density else None
+        ax.hist(pooled, bins=np.linspace(lo, hi, GROUP_BINS),
+               color=color if color is not None else theme.NEUTRAL,
+               weights=weights, zorder=2)
         ax.set_xlim(lo, hi)
+        if y_max is not None:
+            ax.set_ylim(0, y_max)
 
         for _, v in groups:
             ax.scatter([np.median(v)], [0.95], transform=ax.get_xaxis_transform(),
@@ -415,9 +438,10 @@ def plot_metric_summary(frames: list, column: str, xlabel: str, scale: float,
                         xy=(0.99, 0.94), xycoords="axes fraction", ha="right",
                         va="top", fontsize=_FONT_ANNOT_SMALL, color="#52514e")
         ax.set_xlabel(xlabel, color="black")
-        ax.set_ylabel("# tracks", color="black")
+        ax.set_ylabel("fraction of tracks" if density else "# tracks", color="black")
+        head = f"{title}  " if title else ""
         ax.set_title(
-            f"n = {len(groups)} movies  ({len(pooled):,} tracks)"
+            f"{head}n = {len(groups)} movies  ({len(pooled):,} tracks)"
             f"\n◆ = per-movie median",
             color="black",
         )
@@ -428,12 +452,16 @@ def plot_metric_summary(frames: list, column: str, xlabel: str, scale: float,
 
 def plot_joint_summary(frames: list, xcol: str, ycol: str, xlabel: str, ylabel: str,
                        title: str, stem: Path, formats, dpi: int,
-                       color_by_class: bool = True) -> None:
+                       color_by_class: bool = True, *,
+                       limits: tuple | None = None) -> None:
     """Group-level joint distribution of two track properties.
 
     ``frames`` must already carry ``xcol``/``ycol`` in working units. One
     marker per movie sits at its median, since the movie and not the track
     is the unit of replication.
+
+    ``limits`` is an ``(x_lo, x_hi, y_lo, y_hi)`` override, used by the
+    cross-group comparison so every group's figure is drawn on the same axes.
     """
     non_empty = [(label, f) for label, f in frames if len(f)]
     if not non_empty:
@@ -472,8 +500,11 @@ def plot_joint_summary(frames: list, xcol: str, ycol: str, xlabel: str, ylabel: 
                       color="black", edgecolor="white", linewidth=0.8, alpha=0.75,
                       zorder=6)
 
-        x_lo, x_hi = _pct_limits(pooled[xcol])
-        y_lo, y_hi = _pct_limits(pooled[ycol])
+        if limits is not None:
+            x_lo, x_hi, y_lo, y_hi = limits
+        else:
+            x_lo, x_hi = _pct_limits(pooled[xcol])
+            y_lo, y_hi = _pct_limits(pooled[ycol])
         ax.set_xlim(x_lo, x_hi)
         ax.set_ylim(y_lo, y_hi)
         ax_top.hist(pooled[xcol], bins=np.linspace(x_lo, x_hi, 40),
@@ -527,12 +558,15 @@ def _length_speed_metrics(frames: list, units: Units) -> list:
 
 
 def plot_length_vs_speed_summary(per_movie: list, units: Units, stem: Path,
-                                 formats, dpi: int) -> None:
+                                 formats, dpi: int, *,
+                                 limits: tuple | None = None) -> None:
     """Group-level track length against mean speed, with per-movie medians.
 
     Movies with no ``track_analysis.csv`` (``props is None``, see
     :func:`read_movie_frames`) are skipped -- there is nothing to plot for
     them here.
+
+    ``limits`` is forwarded to :func:`plot_joint_summary` -- see there.
     """
     frames = _length_speed_metrics(
         [(label, props) for label, _, props, _ in per_movie if props is not None],
@@ -541,4 +575,4 @@ def plot_length_vs_speed_summary(per_movie: list, units: Units, stem: Path,
         frames, "_len", "_spd",
         theme.axis_label("duration", units.calibration),
         f"Mean speed ({theme.unit('speed', units.calibration)})",
-        "Length vs speed", stem, formats, dpi)
+        "Length vs speed", stem, formats, dpi, limits=limits)
