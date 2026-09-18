@@ -1,4 +1,6 @@
 """The msd analysis: registration, settings, tables and figure selection."""
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -127,3 +129,71 @@ def test_list_outputs_shows_msd(capsys):
     assert cli.main(["list-outputs", "msd"]) == 0
     out = capsys.readouterr().out
     assert "msd_fits" in out and "msd_curves" in out
+
+
+CORE_FIGURES = ["msd_combined", "msd_regimes", "motility_classes", "d_vs_alpha"]
+
+
+def test_core_figures_are_written(tmp_path):
+    synthetic_movie(tmp_path / "g" / "m.tif")
+    cfg = msd_config(tmp_path, tmp_path / "g", figures=CORE_FIGURES)
+    assert runner.run(cfg).exit_code == 0
+    msd_dir = tmp_path / "out" / "g" / "m" / "msd"
+    for name in CORE_FIGURES:
+        png = msd_dir / f"{name}.png"
+        assert png.exists() and png.stat().st_size > 5000, name
+
+
+def test_unselected_figure_is_not_written(tmp_path):
+    synthetic_movie(tmp_path / "g" / "m.tif")
+    cfg = msd_config(tmp_path, tmp_path / "g", figures=["motility_classes"])
+    runner.run(cfg)
+    msd_dir = tmp_path / "out" / "g" / "m" / "msd"
+    assert (msd_dir / "motility_classes.png").exists()
+    assert not (msd_dir / "msd_combined.png").exists()
+
+
+def test_figures_respect_output_formats(tmp_path):
+    synthetic_movie(tmp_path / "g" / "m.tif")
+    cfg = msd_config(tmp_path, tmp_path / "g", figures=["motility_classes"])
+    cfg.outputs.formats = ["png", "svg"]
+    runner.run(cfg)
+    msd_dir = tmp_path / "out" / "g" / "m" / "msd"
+    assert (msd_dir / "motility_classes.png").exists()
+    assert (msd_dir / "motility_classes.svg").exists()
+
+
+def test_empty_fits_write_no_figure(tmp_path):
+    path = tmp_path / "g" / "empty.tif"
+    path.parent.mkdir(parents=True)
+    tifffile.imwrite(str(path), np.full((8, 32, 32), 100, np.uint16))
+    cfg = msd_config(tmp_path, tmp_path / "g", figures=CORE_FIGURES)
+    assert runner.run(cfg).exit_code == 0
+    assert not list((tmp_path / "out" / "g" / "empty" / "msd").glob("*.png"))
+
+
+def test_figure_module_uses_no_pyplot():
+    import napari_spotiflow_tracking.batch.analyses.msd.figures_movie as fm
+    source = Path(fm.__file__).read_text(encoding="utf-8")
+    assert "pyplot" not in source and "matplotlib.use" not in source
+
+
+def test_motility_classes_uses_theme_colours(tmp_path):
+    """The bars must be the theme's class colours, not matplotlib defaults."""
+    from matplotlib.colors import to_hex
+    from napari_spotiflow_tracking.batch import theme
+    from napari_spotiflow_tracking.batch.analyses.msd import compute, figures_movie
+    from napari_spotiflow_tracking.batch.analyses.msd.units import Units
+    from napari_spotiflow_tracking.batch.config import Calibration
+
+    tracked = pd.concat([
+        pd.DataFrame({"frame": range(30), "y": np.cumsum(np.random.default_rng(0).normal(0, 1, 30)),
+                      "x": np.cumsum(np.random.default_rng(1).normal(0, 1, 30)), "particle": 0}),
+    ])
+    _, fits = compute.compute_msd_analysis(tracked, Units(Calibration()), max_lag=10,
+                                           min_length=5)
+    captured = {}
+    figures_movie.plot_motility_classes(fits, tmp_path / "motility_classes",
+                                        ["png"], 40, _capture=captured)
+    drawn = {to_hex(c).lower() for c in captured["colors"]}
+    assert drawn <= {to_hex(c).lower() for c in theme.MOTILITY_COLORS.values()}

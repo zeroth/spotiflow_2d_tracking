@@ -9,13 +9,17 @@ from __future__ import annotations
 
 from ...outputs import OutputSpec, save_table
 from ..base import Analysis, measure_on_for
-from . import compute
+from . import compute, figures_movie
 from .units import Units
 
 CATALOGUE = (
     OutputSpec("msd_curves", "movie", "table", "Per-track MSD per lag, with SEM and pair count"),
     OutputSpec("msd_fits", "movie", "table", "D, alpha and motility class per track"),
     OutputSpec("track_analysis", "movie", "table", "Per-track geometry, intensity, D, alpha, class"),
+    OutputSpec("msd_combined", "movie", "figure", "Per-track MSD curves by class, with ensemble fit"),
+    OutputSpec("msd_regimes", "movie", "figure", "Normalized MSD curves over the alpha regime wedges"),
+    OutputSpec("motility_classes", "movie", "figure", "Track counts per motility class"),
+    OutputSpec("d_vs_alpha", "movie", "figure", "Joint distribution of D and alpha, with marginals"),
 )
 
 
@@ -76,5 +80,19 @@ class MsdAnalysis(Analysis):
                             ("track_analysis", table)):
             if select.table(name):
                 save_table(frame, out_dir / f"{name}.csv")
+
+        formats, dpi = ctx.config.outputs.formats, ctx.config.outputs.dpi
+        if select.figure("msd_combined"):
+            figures_movie.plot_msd_combined(
+                curves, fits, units, out_dir / "msd_combined", formats, dpi)
+        if select.figure("msd_regimes"):
+            figures_movie.plot_msd_regimes(
+                curves, fits, units, out_dir / "msd_regimes", formats, dpi)
+        if select.figure("motility_classes"):
+            figures_movie.plot_motility_classes(
+                fits, out_dir / "motility_classes", formats, dpi)
+        if select.figure("d_vs_alpha"):
+            figures_movie.plot_d_vs_alpha(
+                fits, units, out_dir / "d_vs_alpha", formats, dpi)
 
         return record
