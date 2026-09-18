@@ -1675,6 +1675,17 @@ In `detect.py`, delete the two lines that compute `lengths` and filter `tracked`
 `config.py`: delete `min_track_length` from `TrackingSettings`.
 `presets/tracking.yaml`: delete the `min_track_length: 5` line (the `msd` analysis's `min_length: 5` default already governs).
 `presets/bleaching.yaml`: delete `min_track_length: 10`; add a comment recording that the bleaching analysis will carry its own minimum (phase 4), so nothing is lost when that preset is next touched.
+
+`presets/papa.yaml` (user decision, 2026-09-18): PAPA only counts spots — it never reads the fit columns or the mask, and the old `papa_analysis.py` painted a fixed-radius uint8 mask rather than fitting. So the preset opts out of Task 10's new defaults:
+
+```yaml
+detection:
+  fit: {enabled: false}
+outputs:
+  save_masks: false
+```
+
+Both keys are needed: validation requires `save_masks` to be off when fitting is off. Add a test asserting `load_config(data={"modality": "papa"})` has `detection.fit.enabled is False` and `outputs.save_masks is False`, and that it validates cleanly; and adjust Task 10's `test_every_preset_fits` so it covers `tracking` and `bleaching` only, with a comment saying PAPA opts out deliberately.
 `cli.py`: the `SECTION_HELP["tracking"]` line must no longer promise that short tracks are dropped — say "trackpy linking; every linked track is written, and each analysis applies its own minimum length".
 
 - [ ] **Step 5: Run the tests to verify they pass**
