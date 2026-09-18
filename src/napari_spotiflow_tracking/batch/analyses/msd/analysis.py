@@ -21,6 +21,12 @@ CATALOGUE = (
     OutputSpec("msd_regimes", "movie", "figure", "Normalized MSD curves over the alpha regime wedges"),
     OutputSpec("motility_classes", "movie", "figure", "Track counts per motility class"),
     OutputSpec("d_vs_alpha", "movie", "figure", "Joint distribution of D and alpha, with marginals"),
+    OutputSpec("msd_construction", "movie", "figure",
+               "How an MSD curve is built from one trajectory's displacements"),
+    OutputSpec("msd_archetypes", "movie", "figure",
+               "Characteristic MSD shape and trajectory of each motility class"),
+    OutputSpec("msd_shape_comparison", "movie", "figure",
+               "Class-mean MSD shapes, normalized to a common lag range"),
     OutputSpec("length_hist", "movie", "figure", "Track duration (length) distribution"),
     OutputSpec("path_length_hist", "movie", "figure", "Distribution of total path length walked per track"),
     OutputSpec("speed_hist", "movie", "figure", "Distribution of per-track mean speed"),
@@ -129,6 +135,15 @@ class MsdAnalysis(Analysis):
         if select.figure("d_vs_alpha"):
             figures_movie.plot_d_vs_alpha(
                 fits, units, out_dir / "d_vs_alpha", formats, dpi)
+        if select.figure("msd_construction"):
+            figures_movie.plot_msd_construction(
+                tracked, curves, fits, units, out_dir / "msd_construction", formats, dpi)
+        if select.figure("msd_archetypes"):
+            figures_movie.plot_msd_archetypes(
+                tracked, curves, fits, units, out_dir / "msd_archetypes", formats, dpi)
+        if select.figure("msd_shape_comparison"):
+            figures_movie.plot_msd_shape_comparison(
+                curves, fits, units, out_dir / "msd_shape_comparison", formats, dpi)
 
         if table is not None:
             plot_table = table[table["length"] >= settings["min_length"]]

@@ -5,10 +5,14 @@ Ported from ``scripts/bulk_track_analysis.py``: ``_plot_msd_combined`` (L616),
 ``_plot_d_vs_alpha`` (L931), ``_plot_length_hist`` (L406),
 ``_plot_path_length_hist`` (L440), ``_plot_speed_hist`` (L466),
 ``_plot_length_per_track`` (L491), ``_plot_speed_per_track`` (L514),
-``_plot_directed_hist`` (L1289) and ``_plot_directed_joint`` (L1323), plus the
+``_plot_directed_hist`` (L1289), ``_plot_directed_joint`` (L1323),
+``_plot_msd_construction`` (L1556), ``_plot_msd_archetypes`` (L1634) and
+``_plot_msd_shape_comparison`` (L1710) — the last three following Figure 1 of
+Schirripa Spagnolo & Luin, *Int. J. Mol. Sci.* 25, 8660 (2024) — plus the
 helpers they depend on (``_frame_axes``, ``_thin_ticks``, ``_fit_titles``,
 ``_alpha_criterion``, ``_d_axis_limits``, ``_alpha_axis_limits``,
-``_annotate_corner``, ``_pct_limits``, ``_durations``, ``_top_n_track_ids``).
+``_annotate_corner``, ``_pct_limits``, ``_durations``, ``_top_n_track_ids``,
+``_representative_track``, ``_track_xy``, ``_fit_curve``, ``_draw_scale_bar``).
 Spine visibility and font sizes are no longer set per figure —
 ``theme.style()`` provides them — so panels now show the top/right-hidden
 frame every other batch figure uses instead of the source script's full box.
@@ -20,7 +24,11 @@ cycle.
 
 Unlike the source script, every function here returns without writing
 anything when its input is empty, per the batch pipeline's output contract —
-the source always drew a (possibly blank or "no data") figure.
+the source always drew a (possibly blank or "no data") figure. A function
+whose *inputs* are non-empty but which cannot find a representative track for
+one panel (e.g. no track of a given motility class) still draws that panel's
+"no data" placeholder, matching the source — only a wholly empty input skips
+the figure.
 """
 
 from __future__ import annotations
@@ -52,6 +60,9 @@ from .units import Units
 FIG_H = 5.0
 FIG_W = 7.0
 FIG_W_PANEL = 4.5
+# The archetype figure is exported at a fixed full-width size, split evenly
+# over its three panels: 6800 x 1500 px at the source script's 300 dpi.
+FIG_W_ARCHETYPES = 6800 / 300
 # Lag index is ordered, not categorical — one hue, light->dark, never a rainbow.
 LAG_RAMP = ["#bcd7f5", "#8bb9ec", "#5a9ae2", "#2a78d6", "#17457f"]
 # Lags supported by fewer than this many tracks are too noisy to average
@@ -888,4 +899,308 @@ def plot_directed_joint(
         ax.set_ylabel(f"Velocity ({theme.unit('speed', units.calibration)})", color="black")
         ax_top.set_ylabel("# tracks", color="black", fontsize=_FONT_ANNOT)
         ax_right.set_xlabel("# tracks", color="black", fontsize=_FONT_ANNOT)
+        _finish(fig, stem, formats, dpi)
+
+
+# ── MSD methods figures (after IJMS 25(16), 8660 — Fig. 1) ──────────
+
+
+def _representative_track(fits: pd.DataFrame, cls: str) -> int | None:
+    """Track whose α is the median of its class — robust to outliers."""
+    sel = fits[(fits["motility_class"] == cls) & np.isfinite(fits["alpha"])]
+    if not len(sel):
+        return None
+    order = sel["alpha"].sort_values()
+    return int(sel.loc[order.index[len(order) // 2], "track_id"])
+
+
+def _track_xy(tracked: pd.DataFrame, tid: int, units: Units) -> np.ndarray:
+    grp = tracked[tracked["particle"] == tid].sort_values("frame")
+    return grp[["x", "y"]].to_numpy(dtype=float) * units.length_scale
+
+
+def _fit_curve(fits: pd.DataFrame, tid: int, lags: np.ndarray,
+                units: Units) -> np.ndarray | None:
+    """``4·D·t^α + 4σ²`` evaluated at ``lags`` for one track."""
+    row = fits[fits["track_id"] == tid]
+    if not len(row):
+        return None
+    d_fit = float(row["D"].iloc[0])
+    a_fit = float(row["alpha"].iloc[0])
+    if not (np.isfinite(d_fit) and np.isfinite(a_fit)):
+        return None
+    return 4.0 * d_fit * lags ** a_fit + 4.0 * units.sigma ** 2
+
+
+def _draw_scale_bar(ax, xy: np.ndarray, units: Units) -> None:
+    """Round scale bar sized to roughly a quarter of the trajectory extent."""
+    span = float(max(np.ptp(xy[:, 0]), np.ptp(xy[:, 1])))
+    if span <= 0:
+        return
+    nice = 10 ** np.floor(np.log10(span / 4.0))
+    for mult in (5.0, 2.0, 1.0):
+        if nice * mult <= span / 2.0:
+            nice *= mult
+            break
+    x0 = xy[:, 0].min()
+    y0 = xy[:, 1].min() - 0.08 * span
+    ax.plot([x0, x0 + nice], [y0, y0], color="black", linewidth=2.5,
+            solid_capstyle="butt")
+    ax.annotate(f"{nice:g} {units.length_unit}", xy=(x0 + nice / 2, y0),
+                xytext=(0, -3), textcoords="offset points", ha="center",
+                va="top", fontsize=_FONT_ANNOT_SMALL, color="black")
+
+
+def plot_msd_construction(
+    tracked: pd.DataFrame,
+    curves: pd.DataFrame,
+    fits: pd.DataFrame,
+    units: Units,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """Panels (a) and (b): how an MSD curve is built from one trajectory.
+
+    (a) the trajectory with the displacement chords for Δt = τ…5τ;
+    (b) the resulting MSD ± SEM, first five lags colour-matched to (a).
+    """
+    if tracked.empty or curves.empty or fits.empty:
+        return
+    with theme.style():
+        fig = Figure(figsize=(2 * FIG_W_PANEL, FIG_H))
+        ax_traj, ax_msd = fig.subplots(1, 2)
+        _grid_behind(ax_traj)
+        _grid_behind(ax_msd)
+
+        tid = (_representative_track(fits, "diffusive")
+               or _representative_track(fits, "constrained")
+               or _representative_track(fits, "directed"))
+        if tid is None:
+            for a, t in ((ax_traj, "Lag construction"), (ax_msd, "MSD ± SEM")):
+                a.set_title(t, color="black")
+                a.annotate("no tracks with a converged MSD fit", xy=(0.5, 0.5),
+                           xycoords="axes fraction", ha="center", va="center",
+                           fontsize=_FONT_ANNOT, color="black")
+            fig.tight_layout()
+            _finish(fig, stem, formats, dpi)
+            return
+
+        # ── (a) trajectory + one chord per lag ───────────────────────
+        xy = _track_xy(tracked, tid, units)
+        ax_traj.plot(xy[:, 0], xy[:, 1], color="lightgray", linewidth=1.2, zorder=1)
+        ax_traj.scatter(xy[:, 0], xy[:, 1], s=14, color="black", zorder=2)
+        n_lags = min(5, len(xy) - 1)
+        for k in range(1, n_lags + 1):
+            ax_traj.annotate(
+                "", xy=tuple(xy[k]), xytext=tuple(xy[0]),
+                arrowprops=dict(arrowstyle="->", color=LAG_RAMP[k - 1],
+                                linewidth=2.0, shrinkA=0, shrinkB=0),
+                zorder=3,
+            )
+        handles = [Line2D([], [], color=LAG_RAMP[k - 1], linewidth=2.0,
+                          label=f"Δt = {'' if k == 1 else k}τ")
+                   for k in range(1, n_lags + 1)]
+        ax_traj.legend(handles=handles, frameon=False, fontsize=_FONT_ANNOT_SMALL,
+                       loc="best", labelcolor="black", title="steps from start")
+        ax_traj.set_aspect("equal", adjustable="datalim")
+        ax_traj.set_xlabel(f"x ({theme.unit('length', units.calibration)})", color="black")
+        ax_traj.set_ylabel(f"y ({theme.unit('length', units.calibration)})", color="black")
+        ax_traj.set_title(f"Displacements at Δt = τ…{n_lags}τ  (track {tid})",
+                          color="black")
+
+        # ── (b) the MSD those displacements average to ───────────────
+        grp = curves[curves["track_id"] == tid].sort_values("lag")
+        lags = grp["lag"].to_numpy(dtype=float)
+        vals = grp["msd"].to_numpy(dtype=float)
+        sems = grp["sem"].to_numpy(dtype=float)
+        ax_msd.errorbar(lags, vals, yerr=np.nan_to_num(sems), fmt="o", markersize=4,
+                        color="black", ecolor="gray", elinewidth=1.0,
+                        capsize=2, zorder=2, label="MSD ± SEM")
+        for k in range(1, min(n_lags, len(lags)) + 1):
+            ax_msd.scatter(lags[k - 1], vals[k - 1], s=54, color=LAG_RAMP[k - 1],
+                           edgecolor="white", linewidth=0.8, zorder=3)
+        fit_y = _fit_curve(fits, tid, lags, units)
+        if fit_y is not None:
+            a_fit = float(fits.loc[fits["track_id"] == tid, "alpha"].iloc[0])
+            ax_msd.plot(lags, fit_y, color="black", linestyle="--", linewidth=1.6,
+                        zorder=4, label=f"fit  4·D·t$^α$ + 4σ²  (α={a_fit:.2f})")
+        ax_msd.set_xlabel(f"Lag time τ ({theme.unit('time', units.calibration)})", color="black")
+        ax_msd.set_ylabel(theme.axis_label("msd", units.calibration), color="black")
+        ax_msd.set_title("Averaging equal-lag displacements", color="black")
+        ax_msd.legend(frameon=False, fontsize=_FONT_ANNOT_SMALL, loc="upper left",
+                      labelcolor="black")
+
+        fig.tight_layout()
+        _finish(fig, stem, formats, dpi)
+
+
+def plot_msd_archetypes(
+    tracked: pd.DataFrame,
+    curves: pd.DataFrame,
+    fits: pd.DataFrame,
+    units: Units,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """Panels (c)–(e): the characteristic MSD shape of each class.
+
+    One representative track per class — MSD ± SEM with its fit, a dashed
+    pure-Brownian ``4·D·τ`` reference so the departure from linear is visible,
+    and the trajectory itself as an inset with a scale bar.
+    """
+    if tracked.empty or curves.empty or fits.empty:
+        return
+    panels = [
+        ("Brownian", "diffusive"),
+        ("Drifted", "directed"),
+        ("Confined", "constrained"),
+    ]
+    with theme.style():
+        fig = Figure(figsize=(FIG_W_ARCHETYPES, FIG_H))
+        axes = fig.subplots(1, 3)
+        for ax, (title, cls) in zip(axes, panels):
+            _grid_behind(ax)
+            ax.set_xlabel(f"Lag time τ ({theme.unit('time', units.calibration)})",
+                          color="black")
+            ax.set_ylabel(theme.axis_label("msd", units.calibration), color="black")
+            tid = _representative_track(fits, cls)
+            if tid is None:
+                ax.set_title(f"{title} — {cls}", color="black")
+                ax.annotate(f"no {cls} tracks", xy=(0.5, 0.5),
+                            xycoords="axes fraction", ha="center", va="center",
+                            fontsize=_FONT_ANNOT, color="black")
+                continue
+
+            grp = curves[curves["track_id"] == tid].sort_values("lag")
+            lags = grp["lag"].to_numpy(dtype=float)
+            vals = grp["msd"].to_numpy(dtype=float)
+            sems = np.nan_to_num(grp["sem"].to_numpy(dtype=float))
+            ax.errorbar(lags, vals, yerr=sems, fmt="o", markersize=3.5,
+                        color=theme.MOTILITY_COLORS[cls], ecolor="gray", elinewidth=1.0,
+                        capsize=2, zorder=3)
+            fit_y = _fit_curve(fits, tid, lags, units)
+            a_fit = float(fits.loc[fits["track_id"] == tid, "alpha"].iloc[0])
+            if fit_y is not None:
+                ax.plot(lags, fit_y, color="black", linewidth=1.6, zorder=4)
+            # Headroom for the inset, scaled to the data — not to the
+            # Brownian reference, which for a plateauing track runs far
+            # above every point.
+            y_top = float(np.nanmax(vals + sems)) * 1.5 or 1.0
+            # Pure-Brownian reference through the first point: MSD ∝ τ.
+            if len(lags) and lags[0] > 0 and vals[0] > 0:
+                ax.plot(lags, vals[0] * lags / lags[0], color="gray",
+                        linestyle="--", linewidth=1.2, zorder=2,
+                        label="Brownian  4·D·τ")
+                ax.legend(frameon=False, fontsize=_FONT_ANNOT_SMALL, loc="lower right",
+                          labelcolor="black")
+            ax.set_ylim(0, y_top)
+            # One point below the rc title size (theme.STYLE["axes.titlesize"]
+            # == 15): this title also carries the track id and alpha.
+            ax.set_title(f"{title} — {cls} (track {tid}, α={a_fit:.2f})",
+                         color="black", fontsize=_FONT_ANNOT)
+
+            # Trajectory inset, upper-left — reliably clear of a rising MSD curve.
+            inset = ax.inset_axes((0.07, 0.56, 0.36, 0.40))
+            xy = _track_xy(tracked, tid, units)
+            inset.plot(xy[:, 0], xy[:, 1], color=theme.MOTILITY_COLORS[cls], linewidth=0.9)
+            _draw_scale_bar(inset, xy, units)
+            inset.set_aspect("equal", adjustable="datalim")
+            inset.margins(x=0.12, y=0.22)  # room for the scale bar and its label
+            inset.set_xticks([])
+            inset.set_yticks([])
+            for side in ("top", "right", "bottom", "left"):
+                inset.spines[side].set_color("black")
+            inset.set_facecolor("#f0f0f0")
+
+        # Explicit margins, not tight_layout: tight_layout sizes each panel to
+        # its own tick-label width, which leaves the three panels slightly
+        # unequal.
+        fig.subplots_adjust(left=0.05, right=0.995, top=0.90, bottom=0.16,
+                            wspace=0.22)
+        _finish(fig, stem, formats, dpi)
+
+
+def plot_msd_shape_comparison(
+    curves: pd.DataFrame,
+    fits: pd.DataFrame,
+    units: Units,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """Panel (f): the three class-mean MSD *shapes*, on linear axes.
+
+    Both axes are normalized to the common maximum lag, so every curve runs
+    from the origin to (1, 1) and only its curvature differs — concave for
+    subdiffusive, straight for Brownian, convex for superdiffusive. Without
+    that, a directed population whose MSD is orders of magnitude larger than
+    a confined one flattens the other curves onto the axis and the comparison
+    the panel exists to make is lost. Absolute magnitudes live in
+    ``msd_combined.png``; this panel is about shape alone.
+    """
+    if curves.empty or fits.empty:
+        return
+    with theme.style():
+        fig = Figure(figsize=(FIG_W, FIG_H))
+        ax = fig.subplots()
+        _grid_behind(ax)
+
+        class_of = dict(zip(fits["track_id"], fits["motility_class"]))
+        labelled = curves.assign(motility_class=curves["track_id"].map(class_of))
+
+        per_class = {}
+        for cls in MOTILITY_CLASSES:
+            sub = labelled[labelled["motility_class"] == cls]
+            if not len(sub):
+                continue
+            agg = (sub.groupby("lag")["msd"]
+                   .agg(mean="mean", n="size").reset_index().sort_values("lag"))
+            agg = agg[agg["n"] >= MIN_TRACKS_PER_LAG]
+            if len(agg) >= 2:
+                per_class[cls] = agg
+
+        # A shared x-axis needs a lag range every class actually reaches.
+        common_max = min((float(a["lag"].max()) for a in per_class.values()),
+                         default=0.0)
+        drew = False
+        for cls, agg in per_class.items():
+            agg = agg[agg["lag"] <= common_max]
+            if len(agg) < 2:
+                continue
+            norm = float(agg["mean"].iloc[-1])
+            if norm <= 0:
+                continue
+            alphas = fits[fits["motility_class"] == cls]["alpha"]
+            xs = (agg["lag"] / common_max).to_numpy(dtype=float)
+            ys = (agg["mean"] / norm).to_numpy(dtype=float)
+            ax.plot(xs, ys, color=theme.MOTILITY_COLORS[cls], linewidth=2.2, zorder=3)
+            drew = True
+            # Direct labels beat a legend here: three long labels won't fit
+            # on one row, and the curves are well separated at mid-range.
+            i = int(np.argmin(np.abs(xs - 0.55)))
+            ax.annotate(
+                f"{cls}  (n={int((fits['motility_class'] == cls).sum())}, "
+                f"median α={alphas.median():.2f})",
+                xy=(xs[i], ys[i]), xytext=(0, 7), textcoords="offset points",
+                ha="center", va="bottom", fontsize=_FONT_ANNOT, color="black", zorder=5,
+                path_effects=[pe.withStroke(linewidth=3.0, foreground="white")],
+            )
+
+        # The normalization belongs on the figure, but at this type size it
+        # only fits in the title — an axis label long enough to carry it runs
+        # off both ends of a column-width figure.
+        ax.set_xlabel("Lag time τ / τ$_{max}$", color="black")
+        ax.set_ylabel("Mean MSD, normalized to τ$_{max}$", color="black")
+        ax.set_title(
+            f"Class-mean MSD shapes — shape only, normalized at "
+            f"τ$_{{max}}$ = {common_max:.3g} {units.time_unit}",
+            color="black",
+        )
+        if not drew:
+            ax.annotate("no class had enough tracks to average", xy=(0.5, 0.5),
+                        xycoords="axes fraction", ha="center", va="center",
+                        fontsize=_FONT_ANNOT, color="black")
+        fig.tight_layout()
         _finish(fig, stem, formats, dpi)

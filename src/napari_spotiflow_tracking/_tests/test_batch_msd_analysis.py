@@ -207,6 +207,30 @@ def test_empty_fits_write_no_figure(tmp_path):
     assert not list((tmp_path / "out" / "g" / "empty" / "msd").glob("*.png"))
 
 
+EXPLANATORY_FIGURES = ["msd_construction", "msd_archetypes", "msd_shape_comparison"]
+
+
+def test_explanatory_figures_are_written(tmp_path):
+    synthetic_movie(tmp_path / "g" / "m.tif", n_frames=60, n_spots=8, seed=6)
+    cfg = msd_config(tmp_path, tmp_path / "g", figures=EXPLANATORY_FIGURES)
+    assert runner.run(cfg).exit_code == 0
+    msd_dir = tmp_path / "out" / "g" / "m" / "msd"
+    for name in EXPLANATORY_FIGURES:
+        png = msd_dir / f"{name}.png"
+        assert png.exists() and png.stat().st_size > 5000, name
+
+
+def test_archetypes_figure_is_full_width(tmp_path):
+    """The archetype figure exports at a fixed manuscript width (three panels)."""
+    from PIL import Image
+    synthetic_movie(tmp_path / "g" / "m.tif", n_frames=60, n_spots=8, seed=7)
+    cfg = msd_config(tmp_path, tmp_path / "g", figures=["msd_archetypes"])
+    cfg.outputs.dpi = 100
+    runner.run(cfg)
+    with Image.open(tmp_path / "out" / "g" / "m" / "msd" / "msd_archetypes.png") as im:
+        assert im.width > im.height * 2
+
+
 def test_figure_module_uses_no_pyplot():
     import napari_spotiflow_tracking.batch.analyses.msd.figures_movie as fm
     source = Path(fm.__file__).read_text(encoding="utf-8")
