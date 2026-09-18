@@ -79,7 +79,13 @@ def _build_context(job: MovieJob, cfg: PipelineConfig, out_dir: Path, device: st
         if cfg.detection.fit.enabled:
             spots, mask = fit_spots(pre, spots, cfg.detection.fit, device)
             if cfg.outputs.save_masks:
-                tifffile.imwrite(str(out_dir / "mask.tif"), mask, bigtiff=True)
+                mask_path = out_dir / "mask.tif"
+                tifffile.imwrite(str(mask_path), mask, bigtiff=True)
+                # A labelled (T, Y, X) int32 stack is the same size as the movie
+                # in int32 — hundreds of MB per movie. Say so, so a folder-sized
+                # run does not fill a disk silently (outputs.save_masks: false).
+                log.info("%s: wrote mask.tif (%.1f MB)", job.key,
+                         mask_path.stat().st_size / 1e6)
         save_table(spots, spots_csv)
         tracks = None
         if cfg.tracking.enabled:

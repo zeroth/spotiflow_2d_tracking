@@ -13,9 +13,11 @@ the motility bars of ``write_run_summary`` (``_plot_run_summary`` L1811 and
 
 Movies are read straight off disk (``<movie>/msd/msd_fits.csv`` and
 ``track_analysis.csv``) rather than kept in memory, so this also covers
-movies skipped via ``skip_existing``. A movie missing either file is left
-out entirely, mirroring ``summary_rows_from_disk``'s skip of an unreadable
-``msd_fits.csv``.
+movies skipped via ``skip_existing``. A movie with no readable
+``msd_fits.csv`` is left out entirely (mirroring
+``summary_rows_from_disk``); one that has it but no ``track_analysis.csv``
+still contributes to the fits-based outputs and is simply absent from the
+ones built on the per-track table — see :func:`read_movie_frames`.
 
 Class colours are :data:`theme.MOTILITY_COLORS`, matching the source's
 per-class colouring; a plain, non-class hue (``"tab:blue"`` in the source)
