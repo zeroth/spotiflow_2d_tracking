@@ -31,6 +31,7 @@ input writes nothing, rather than the source's "no data" placeholder.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import matplotlib.patheffects as pe
@@ -60,6 +61,8 @@ from .figures_movie import (
 )
 from .units import Units
 
+log = logging.getLogger("napari_spotiflow_tracking.batch")
+
 #: Bin edges per pooled histogram — shared across the four metric summaries.
 GROUP_BINS = 45
 
@@ -76,28 +79,70 @@ def _at_least(df: pd.DataFrame, min_length: int) -> pd.DataFrame:
     return df[df["length"] >= min_length]
 
 
+def _duration_column(props: pd.DataFrame, units: Units) -> pd.Series:
+    """Per-track duration in the working time unit, preferring the on-disk column.
+
+    ``track_analysis.csv`` already carries ``duration_s`` when the run that
+    wrote it was calibrated (:func:`_track_properties.add_physical_columns`)
+    -- reuse it rather than recompute. A calibrated *summary* run reading an
+    older or uncalibrated movie's table -- e.g. under ``skip_existing`` --
+    has no such column, so it is derived here with the same formula
+    (``add_physical_columns``, ``bulk:_props_in_working_units`` L1780-1794):
+    an n-frame track spans (n - 1) intervals.
+    """
+    if units.is_physical:
+        if "duration_s" in props.columns:
+            return props["duration_s"]
+        return (props["length"].astype(float) - 1.0) * units.delta
+    return props["length"].astype(float)
+
+
 def read_movie_frames(movie_dirs, min_length: int, units: Units) -> list:
-    """``(label, fits, props, directed)`` for every movie that has MSD outputs.
+    """``(label, fits, props, directed)`` for every movie with a ``msd_fits.csv``.
 
     Reads ``<movie_dir>/msd/msd_fits.csv`` and ``track_analysis.csv`` back
     off disk and cuts both at ``min_length``, so a group summary describes
-    the same tracks as its own per-movie figures. A movie missing either
-    file (failed, or run with ``tables: none``) is left out. ``label`` is
-    the movie folder's name.
+    the same tracks as its own per-movie figures. ``label`` is the movie
+    folder's name.
+
+    A movie with no ``msd_fits.csv`` (failed, or run with ``tables: none``)
+    is left out entirely. A movie with ``msd_fits.csv`` but no
+    ``track_analysis.csv`` (e.g. run with ``tables: [msd_fits]``) is still
+    included, with ``props`` and ``directed`` as ``None`` -- it still
+    contributes to the fits-only summaries (``motility_summary``,
+    ``d_vs_alpha_summary``), matching ``bulk:_read_group_frames``, which
+    reads fits and props independently. An unreadable CSV (truncated,
+    locked) is logged and treated the same as missing, rather than failing
+    the whole group, matching ``bulk:summary_rows_from_disk`` /
+    ``bulk:_read_group_frames``.
     """
     frames = []
     for movie_dir in movie_dirs:
         movie_dir = Path(movie_dir)
         fits_path = movie_dir / "msd" / "msd_fits.csv"
-        props_path = movie_dir / "msd" / "track_analysis.csv"
-        if not fits_path.exists() or not props_path.exists():
+        if not fits_path.exists():
             continue
-        fits = _at_least(pd.read_csv(fits_path), min_length)
-        props = _at_least(pd.read_csv(props_path), min_length).copy()
-        props["_dur"] = (props["duration_s"]
-                         if units.is_physical and "duration_s" in props.columns
-                         else props["length"].astype(float))
-        directed = compute.directed_metrics(props, units)
+        try:
+            fits = _at_least(pd.read_csv(fits_path), min_length)
+        except Exception as exc:
+            log.warning("%s: could not read %s (%s: %s); movie left out of the "
+                       "group summary", movie_dir.name, fits_path,
+                       type(exc).__name__, exc)
+            continue
+
+        props, directed = None, None
+        props_path = movie_dir / "msd" / "track_analysis.csv"
+        if props_path.exists():
+            try:
+                props = _at_least(pd.read_csv(props_path), min_length).copy()
+            except Exception as exc:
+                log.warning("%s: could not read %s (%s: %s); movie kept for "
+                           "fits-only summaries", movie_dir.name, props_path,
+                           type(exc).__name__, exc)
+                props = None
+            if props is not None:
+                props["_dur"] = _duration_column(props, units)
+                directed = compute.directed_metrics(props, units)
         frames.append((movie_dir.name, fits, props, directed))
     return frames
 
@@ -113,10 +158,13 @@ def motility_summary_table(per_movie: list) -> pd.DataFrame:
 
 
 def group_fits_table(per_movie: list) -> pd.DataFrame:
-    """Every movie's ``msd_fits`` rows, concatenated with a ``movie`` column."""
+    """Every movie's ``msd_fits`` rows, concatenated with a ``movie`` column.
+
+    ``per_movie`` is never empty here -- ``summarize_group`` already returns
+    before calling this when :func:`read_movie_frames` yields nothing, and
+    every entry it does yield carries a (possibly empty) ``fits`` frame.
+    """
     frames = [fits.assign(movie=label) for label, fits, _, _ in per_movie]
-    if not frames:
-        return pd.DataFrame(columns=["movie"])
     return pd.concat(frames, ignore_index=True)
 
 
@@ -480,9 +528,15 @@ def _length_speed_metrics(frames: list, units: Units) -> list:
 
 def plot_length_vs_speed_summary(per_movie: list, units: Units, stem: Path,
                                  formats, dpi: int) -> None:
-    """Group-level track length against mean speed, with per-movie medians."""
+    """Group-level track length against mean speed, with per-movie medians.
+
+    Movies with no ``track_analysis.csv`` (``props is None``, see
+    :func:`read_movie_frames`) are skipped -- there is nothing to plot for
+    them here.
+    """
     frames = _length_speed_metrics(
-        [(label, props) for label, _, props, _ in per_movie], units)
+        [(label, props) for label, _, props, _ in per_movie if props is not None],
+        units)
     plot_joint_summary(
         frames, "_len", "_spd",
         theme.axis_label("duration", units.calibration),

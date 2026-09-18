@@ -226,7 +226,11 @@ class MsdAnalysis(Analysis):
             figures_group.plot_d_vs_alpha_summary(
                 per_movie, units, out_dir / "d_vs_alpha_summary", formats, dpi)
 
-        props_frames = [(label, props) for label, _, props, _ in per_movie]
+        # Movies with no track_analysis.csv on disk (props/directed is None,
+        # see figures_group.read_movie_frames) contribute to the fits-only
+        # summaries above but are simply absent from these.
+        props_frames = [(label, props) for label, _, props, _ in per_movie
+                        if props is not None]
         if select.figure("length_summary"):
             figures_group.plot_metric_summary(
                 props_frames, "_dur", theme.axis_label("duration", units.calibration),
@@ -241,7 +245,8 @@ class MsdAnalysis(Analysis):
             figures_group.plot_length_vs_speed_summary(
                 per_movie, units, out_dir / "length_vs_speed_summary", formats, dpi)
 
-        directed_frames = [(label, directed) for label, _, _, directed in per_movie]
+        directed_frames = [(label, directed) for label, _, _, directed in per_movie
+                          if directed is not None]
         if select.figure("directed_displacement_summary"):
             figures_group.plot_metric_summary(
                 directed_frames, "_disp",
