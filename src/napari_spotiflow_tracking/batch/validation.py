@@ -28,9 +28,6 @@ def validate(cfg: PipelineConfig) -> None:
         errors.append("measure_on must be raw or preprocessed")
     if cfg.detection.method not in ("spotiflow", "log"):
         errors.append("detection.method must be spotiflow or log")
-    if cfg.detection.fit.enabled and not torchimize_available():
-        errors.append("detection.fit.enabled needs the optional 'torchimize' package "
-                      "(pip install torchimize)")
     if cfg.outputs.save_masks and not cfg.detection.fit.enabled:
         errors.append("outputs.save_masks needs detection.fit.enabled "
                       "(masks come from the Gaussian fit)")

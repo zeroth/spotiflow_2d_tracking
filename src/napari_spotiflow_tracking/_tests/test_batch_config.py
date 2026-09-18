@@ -143,6 +143,18 @@ def test_scalar_types_are_checked(data, message):
     assert message in str(info.value)
 
 
+def test_fitting_and_masks_are_on_by_default():
+    cfg = load_config(data={})
+    assert cfg.detection.fit.enabled is True
+    assert cfg.outputs.save_masks is True
+
+
+@pytest.mark.parametrize("modality", ["tracking", "papa", "bleaching"])
+def test_every_preset_fits(modality):
+    cfg = load_config(data={"modality": modality})
+    assert cfg.detection.fit.enabled is True
+
+
 def test_optional_accepts_null_and_int_becomes_float():
     cfg = load_config(data={"detection": {"spotiflow": {"prob_thresh": None}},
                             "tracking": {"search_range": 3}})

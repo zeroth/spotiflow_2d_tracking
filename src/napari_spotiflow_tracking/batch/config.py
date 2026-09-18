@@ -67,7 +67,11 @@ class LogSettings:
 
 @dataclass
 class FitSettings:
-    enabled: bool = False
+    # On by default: every spot is fitted with a 2D Gaussian, using the batched
+    # torchimize backend when importable and a per-frame scipy fallback otherwise
+    # (see batch/detect.py:fit_backend). spots.csv always carries the fit and
+    # region-property columns as a result.
+    enabled: bool = True
     window: int = 2
     max_radius: Optional[float] = 2.0
 
@@ -93,7 +97,9 @@ class OutputSettings:
     formats: List[str] = field(default_factory=lambda: ["png", "svg"])
     dpi: int = 300
     save_preprocessed: bool = False
-    save_masks: bool = False
+    # On by default: mask.tif is written alongside spots.csv unless set to false.
+    # Requires detection.fit.enabled (the mask comes from the Gaussian fit).
+    save_masks: bool = True
 
 
 @dataclass

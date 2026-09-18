@@ -111,3 +111,34 @@ def test_fit_spots_adds_fit_columns():
     fitted, mask = detect.fit_spots(stack, spots, FitSettings(enabled=True), "cpu")
     assert {"frame", "y", "x", "sigma_x", "sigma_y", "spot_radius"} <= set(fitted.columns)
     assert mask.shape == stack.shape and mask.any()
+
+
+def test_fit_backend_prefers_torchimize_when_available(monkeypatch):
+    monkeypatch.setattr(detect, "torchimize_available", lambda: True)
+    assert detect.fit_backend() == "torchimize"
+    monkeypatch.setattr(detect, "torchimize_available", lambda: False)
+    assert detect.fit_backend() == "scipy"
+
+
+def test_scipy_fit_produces_the_same_columns_as_torchimize(monkeypatch):
+    """The fallback must not change spots.csv's schema."""
+    stack = _blob_stack(n_frames=2)
+    spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
+    fit = FitSettings(enabled=True)
+    gpu_spots, gpu_mask = detect.fit_spots(stack, spots, fit, "cpu")
+    monkeypatch.setattr(detect, "torchimize_available", lambda: False)
+    cpu_spots, cpu_mask = detect.fit_spots(stack, spots, fit, "cpu")
+    assert list(cpu_spots.columns) == list(gpu_spots.columns)
+    assert len(cpu_spots) == len(gpu_spots)
+    assert cpu_mask.shape == gpu_mask.shape and cpu_mask.dtype == gpu_mask.dtype
+    assert cpu_mask.any()
+
+
+def test_scipy_fit_recovers_blob_positions(monkeypatch):
+    monkeypatch.setattr(detect, "torchimize_available", lambda: False)
+    stack = _blob_stack(n_frames=2)
+    spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
+    fitted, _ = detect.fit_spots(stack, spots, FitSettings(enabled=True), "cpu")
+    ok = fitted[["x_fit", "y_fit"]].notna().all(axis=1)
+    assert ok.sum() >= len(fitted) - 1
+    assert (fitted.loc[ok, "sigma_x"] > 0).all()

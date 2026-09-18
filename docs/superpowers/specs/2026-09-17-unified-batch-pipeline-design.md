@@ -56,6 +56,7 @@ One batch pipeline, inside the package, driven by a YAML config:
 | Unknown config keys / output names | Warning, not error |
 | Existing scripts | Left untouched |
 | Internals | Analysis plugins + dataclass config (no new framework) |
+| Fitting/masks | On by default; torchimize when importable, else the per-frame scipy fitter; mask.tif written unless save_masks is false (user, 2026-09-18) |
 
 ## Architecture
 
@@ -172,7 +173,7 @@ detection:
   method: spotiflow           # spotiflow | log
   spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}   # model: name or folder
   log: {min_sigma: 2, max_sigma: 10, num_sigma: 10, threshold: 0.09}
-  fit: {enabled: false, window: 2, max_radius: 2.0}   # needs torchimize
+  fit: {enabled: true, window: 2, max_radius: 2.0}   # torchimize when available, else scipy
 
 tracking:
   enabled: true
@@ -186,7 +187,7 @@ outputs:
   formats: [png, svg]
   dpi: 300
   save_preprocessed: false
-  save_masks: false
+  save_masks: true
 
 analyses:
   msd: {...}

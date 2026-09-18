@@ -60,7 +60,7 @@ def test_collects_all_errors(demo):
         output_dir="",
         device="gpu",
         measure_on="denoised",
-        detection={"method": "dog"},
+        detection={"method": "dog", "fit": {"enabled": False}},
         outputs={"formats": ["png", "tiff"], "save_masks": True},
         preprocessing={"steps": [{"sharpen": {}}]},
         tracking={"enabled": False},
@@ -94,11 +94,17 @@ def test_unknown_output_name_warns(demo):
         validate(_cfg(analyses={"demo": {"figures": ["plots"]}}))
 
 
-def test_fit_needs_torchimize(monkeypatch):
+def test_fit_does_not_require_torchimize(monkeypatch):
+    """The scipy fallback means a missing torchimize is not a config error."""
     monkeypatch.setattr("napari_spotiflow_tracking.batch.validation.torchimize_available",
                         lambda: False)
-    with pytest.raises(ConfigError, match="torchimize"):
-        validate(_cfg(detection={"fit": {"enabled": True}}))
+    validate(_cfg(detection={"fit": {"enabled": True}}))
+
+
+def test_save_masks_still_needs_fitting():
+    with pytest.raises(ConfigError, match="outputs.save_masks needs detection.fit.enabled"):
+        validate(_cfg(detection={"fit": {"enabled": False}},
+                      outputs={"save_masks": True}))
 
 
 def test_analysis_section_must_be_mapping(demo):

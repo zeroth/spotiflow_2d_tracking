@@ -276,6 +276,20 @@ def test_hooks_receive_cfg_and_dropped_groups_are_logged(tmp_path, recorder, cap
     assert len(dropped) == 1 and "no movie succeeded" in dropped[0]
 
 
+def test_mask_and_fit_columns_are_written_by_default(tmp_path, recorder):
+    _movie(tmp_path / "g" / "m.tif")
+    cfg = _cfg(tmp_path, [str(tmp_path / "g")])
+    cfg.detection.fit.enabled = True
+    cfg.outputs.save_masks = True
+    assert runner.run(cfg).exit_code == 0
+    movie = tmp_path / "out" / "g" / "m"
+    spots = pd.read_csv(movie / "spots.csv")
+    assert {"amp", "x_fit", "y_fit", "sigma_x", "sigma_y", "bg",
+            "area", "mean_intensity", "max_intensity", "spot_radius"} <= set(spots.columns)
+    mask = tifffile.imread(str(movie / "mask.tif"))
+    assert mask.shape[0] == 6 and mask.any()
+
+
 def test_resolved_config_holds_merged_settings_and_effective_device(tmp_path, recorder,
                                                                      monkeypatch):
     _movie(tmp_path / "g" / "m.tif")

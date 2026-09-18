@@ -163,7 +163,7 @@ detection:
   method: spotiflow           # spotiflow | log
   spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}
   log: {min_sigma: 2, max_sigma: 10, num_sigma: 10, threshold: 0.09}
-  fit: {enabled: false, window: 2, max_radius: 2.0}   # 2D Gaussian + masks; needs torchimize
+  fit: {enabled: true, window: 2, max_radius: 2.0}   # 2D Gaussian + masks; torchimize when available, else scipy
 
 tracking:
   enabled: true
@@ -177,7 +177,7 @@ outputs:
   formats: [png, svg]
   dpi: 300
   save_preprocessed: false
-  save_masks: false
+  save_masks: true
 ```
 
 Any value can be overridden on the command line, so one config covers a sweep:
@@ -220,9 +220,19 @@ downstream is the same either way, and `run.log` records what ran.
   run.log
   <group>/<movie>/
     spots.csv, tracks.csv
-    preprocessed.tif, mask.tif      only when asked for
+    preprocessed.tif                 only when save_preprocessed: true
+    mask.tif                         written unless save_masks: false
     movie_status.json               marks the movie complete, for skip_existing
 ```
+
+Every spot is fitted with a 2D Gaussian by default (`detection.fit.enabled: true`), so
+`spots.csv` carries the fit and region-property columns (`amp`, `x_fit`, `y_fit`,
+`sigma_x`, `sigma_y`, `bg`, `area`, `mean_intensity`, `max_intensity`,
+`spot_radius`), and `mask.tif` is written unless `outputs.save_masks` is set to
+`false`. Fitting uses the batched `torchimize` backend when it is importable and a
+per-frame `scipy` fallback otherwise, so it needs no extra install to be on by
+default; the scipy fallback is slower (roughly 5x on one ~18k-spot, 827-frame
+movie in testing) but not prohibitively so.
 
 One movie failing does not stop the run: its traceback goes to `run.log`, its
 row reads `FAIL`, and the rest carry on. The command exits 0 when everything
