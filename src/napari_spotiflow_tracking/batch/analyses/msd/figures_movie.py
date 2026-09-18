@@ -1,15 +1,26 @@
-"""Core per-movie MSD figures.
+"""Core per-movie MSD figures, plus per-track distribution and directed-motion figures.
 
 Ported from ``scripts/bulk_track_analysis.py``: ``_plot_msd_combined`` (L616),
-``_plot_motility_classes`` (L724), ``_plot_msd_regimes`` (L749) and
-``_plot_d_vs_alpha`` (L931), plus the helpers they depend on (``_frame_axes``,
-``_thin_ticks``, ``_fit_titles``, ``_alpha_criterion``, ``_d_axis_limits``,
-``_alpha_axis_limits``). Spine visibility and font sizes are no longer set
-per figure — ``theme.style()`` provides them — so panels now show the
-top/right-hidden frame every other batch figure uses instead of the source
-script's full box. Class colours come from :data:`theme.MOTILITY_COLORS`
-rather than the old ``tab:`` palette, and the ``D`` vs alpha marginals use
-:data:`theme.NEUTRAL` rather than a literal ``"tab:blue"``.
+``_plot_motility_classes`` (L724), ``_plot_msd_regimes`` (L749),
+``_plot_d_vs_alpha`` (L931), ``_plot_length_hist`` (L406),
+``_plot_path_length_hist`` (L440), ``_plot_speed_hist`` (L466),
+``_plot_length_per_track`` (L491), ``_plot_speed_per_track`` (L514),
+``_plot_directed_hist`` (L1289) and ``_plot_directed_joint`` (L1323), plus the
+helpers they depend on (``_frame_axes``, ``_thin_ticks``, ``_fit_titles``,
+``_alpha_criterion``, ``_d_axis_limits``, ``_alpha_axis_limits``,
+``_annotate_corner``, ``_pct_limits``, ``_durations``, ``_top_n_track_ids``).
+Spine visibility and font sizes are no longer set per figure —
+``theme.style()`` provides them — so panels now show the top/right-hidden
+frame every other batch figure uses instead of the source script's full box.
+Class colours come from :data:`theme.MOTILITY_COLORS` rather than the old
+``tab:``/``CLASS_COLORS`` palette; plain (unclassed) histograms and marginals
+use :data:`theme.NEUTRAL`; the per-track line plots (many raw, unclassed
+traces) use :data:`theme.RAW_TRACE` rather than matplotlib's default colour
+cycle.
+
+Unlike the source script, every function here returns without writing
+anything when its input is empty, per the batch pipeline's output contract —
+the source always drew a (possibly blank or "no data") figure.
 """
 
 from __future__ import annotations
@@ -171,6 +182,47 @@ def _alpha_axis_limits(alpha_values) -> tuple:
     hi = max(float(np.percentile(a, 99.5)), ALPHA_DIRECTED_MIN * 1.4)
     pad = 0.05 * max(hi - lo, 1e-9)
     return lo - pad, hi + pad
+
+
+def _annotate_corner(ax, text: str) -> None:
+    """Top-right annotation, stroked so it stays legible over the data."""
+    ax.annotate(
+        text, xy=(0.97, 0.95), xycoords="axes fraction", ha="right", va="top",
+        fontsize=_FONT_ANNOT, color="black",
+        path_effects=[pe.withStroke(linewidth=3.0, foreground="white")],
+    )
+
+
+def _pct_limits(values, lo_pct: float = 0.5, hi_pct: float = 99.5, pad: float = 0.05) -> tuple:
+    """Percentile limits with padding, so a few outliers cannot own the axis."""
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if not v.size:
+        return 0.0, 1.0
+    lo, hi = float(np.percentile(v, lo_pct)), float(np.percentile(v, hi_pct))
+    if hi <= lo:
+        hi = lo + 1.0
+    m = pad * (hi - lo)
+    return lo - m, hi + m
+
+
+def _durations(table: pd.DataFrame, units: Units) -> np.ndarray:
+    """Per-track duration in the working time unit.
+
+    A track spans the intervals *between* its localizations, so an n-frame
+    track lasts (n - 1) intervals. Uncalibrated this stays the raw frame
+    count, which is what ``min_length`` cuts on.
+    """
+    n = table["length"].to_numpy(dtype=float)
+    return (n - 1.0) * units.delta if units.is_physical else n
+
+
+def _top_n_track_ids(tracked: pd.DataFrame, max_tracks: int) -> list:
+    """Up to ``max_tracks`` particle IDs, longest tracks first."""
+    if "particle" not in tracked.columns or len(tracked) == 0:
+        return []
+    counts = tracked.groupby("particle").size().sort_values(ascending=False)
+    return counts.head(max_tracks).index.tolist()
 
 
 def plot_msd_combined(
@@ -548,4 +600,281 @@ def plot_d_vs_alpha(
             ax_corner.legend(handles, labels, loc="lower center",
                              fontsize=_FONT_ANNOT_SMALL, labelcolor="black",
                              handletextpad=0.4, labelspacing=0.3, borderpad=0.1)
+        _finish(fig, stem, formats, dpi)
+
+
+def plot_length_hist(
+    table: pd.DataFrame,
+    units: Units,
+    min_length: int,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """Track-duration distribution of the analysed (already length-filtered) tracks.
+
+    ``min_length`` is stated on the figure so the cut is legible without the
+    config — in frames, since that is the unit it is given in, with the
+    elapsed-time equivalent beside it when the run is calibrated.
+    """
+    if table.empty:
+        return
+    with theme.style():
+        fig = Figure(figsize=(FIG_W, FIG_H))
+        ax = fig.subplots()
+        _grid_behind(ax)
+
+        durations = _durations(table, units)
+        ax.hist(durations, bins=30, color=theme.NEUTRAL, zorder=2)
+        bits = [f"n = {len(durations):,} analysed tracks",
+                f"length ≥ {int(min_length)} frames"]
+        if units.is_physical:
+            bits[-1] += f" ({(int(min_length) - 1) * units.delta:.3f} {units.time_unit})"
+        _annotate_corner(ax, "   ·   ".join(bits))
+
+        ax.set_xlabel(theme.axis_label("duration", units.calibration), color="black")
+        ax.set_ylabel("# tracks", color="black")
+        ax.set_title(
+            "Track duration distribution" if units.is_physical
+            else "Track length distribution", color="black")
+        ax.grid(axis="x", visible=False)
+        fig.tight_layout()
+        _finish(fig, stem, formats, dpi)
+
+
+def plot_path_length_hist(
+    table: pd.DataFrame,
+    units: Units,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """Distribution of the distance each track actually walked.
+
+    This is the path length — the summed frame-to-frame steps — not the net
+    displacement, and not the duration ``length_hist`` shows. At short frame
+    intervals it is inflated by localization noise, since every jitter adds
+    to the sum; the net displacement in ``directed_displacement`` is the
+    transport quantity.
+    """
+    if table.empty:
+        return
+    with theme.style():
+        fig = Figure(figsize=(FIG_W, FIG_H))
+        ax = fig.subplots()
+        _grid_behind(ax)
+
+        path = table["total_displacement"].to_numpy(dtype=float) * units.length_scale
+        ax.hist(path, bins=30, color=theme.NEUTRAL, edgecolor="black", zorder=2)
+        _annotate_corner(ax, f"n = {len(path):,} analysed tracks")
+
+        ax.set_xlabel(theme.axis_label("path_length", units.calibration), color="black")
+        ax.set_ylabel("# tracks", color="black")
+        ax.set_title("Path length distribution", color="black")
+        ax.grid(axis="x", visible=False)
+        fig.tight_layout()
+        _finish(fig, stem, formats, dpi)
+
+
+def plot_speed_hist(
+    table: pd.DataFrame,
+    units: Units,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """Histogram of per-track mean speed (path length over duration)."""
+    if table.empty:
+        return
+    with theme.style():
+        fig = Figure(figsize=(FIG_W, FIG_H))
+        ax = fig.subplots()
+        _grid_behind(ax)
+
+        speed = table["mean_speed"].to_numpy(dtype=float) * units.length_scale / units.delta
+        ax.hist(speed, bins=30, color=theme.NEUTRAL, edgecolor="black", zorder=2)
+
+        ax.set_xlabel(theme.axis_label("speed", units.calibration), color="black")
+        ax.set_ylabel("# tracks", color="black")
+        ax.set_title("Track mean-speed distribution", color="black")
+        fig.tight_layout()
+        _finish(fig, stem, formats, dpi)
+
+
+def plot_length_per_track(
+    tracked: pd.DataFrame,
+    units: Units,
+    max_tracks: int,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """One line per track: cumulative displacement vs elapsed time.
+
+    ``cum_disp`` has no matching :func:`theme.axis_label` kind — it is a
+    running sum over time, not the track's net (start-to-end) displacement —
+    so its label stays literal, built from ``units.length_unit`` the same way
+    the source script's uncalibrated/calibrated strings did.
+    """
+    if tracked.empty:
+        return
+    ids = _top_n_track_ids(tracked, max_tracks)
+    if not ids:
+        return
+    with theme.style():
+        fig = Figure(figsize=(FIG_W, FIG_H))
+        ax = fig.subplots()
+        _grid_behind(ax)
+
+        for tid in ids:
+            grp = tracked[tracked["particle"] == tid].sort_values("frame")
+            if len(grp) < 2:
+                continue
+            coords = grp[["y", "x"]].to_numpy()
+            steps = np.linalg.norm(np.diff(coords, axis=0), axis=1)
+            cum = np.concatenate([[0.0], np.cumsum(steps)]) * units.length_scale
+            ax.plot(grp["frame"].to_numpy() * units.delta, cum,
+                    color=theme.RAW_TRACE, alpha=0.5, linewidth=0.7)
+
+        ax.set_xlabel(theme.axis_label("time", units.calibration), color="black")
+        ax.set_ylabel(f"Cumulative displacement ({units.length_unit})", color="black")
+        ax.set_title(f"Per-track cumulative displacement (top {len(ids)})", color="black")
+        fig.tight_layout()
+        _finish(fig, stem, formats, dpi)
+
+
+def plot_speed_per_track(
+    tracked: pd.DataFrame,
+    units: Units,
+    max_tracks: int,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """One line per track: frame-to-frame speed vs elapsed time.
+
+    Speed at frame f is the distance from the previous frame to frame f (so
+    the first frame of every track has no value and is skipped).
+    """
+    if tracked.empty:
+        return
+    ids = _top_n_track_ids(tracked, max_tracks)
+    if not ids:
+        return
+    with theme.style():
+        fig = Figure(figsize=(FIG_W, FIG_H))
+        ax = fig.subplots()
+        _grid_behind(ax)
+
+        for tid in ids:
+            grp = tracked[tracked["particle"] == tid].sort_values("frame")
+            if len(grp) < 2:
+                continue
+            coords = grp[["y", "x"]].to_numpy()
+            steps = (np.linalg.norm(np.diff(coords, axis=0), axis=1)
+                     * units.length_scale / units.delta)
+            ax.plot(grp["frame"].to_numpy()[1:] * units.delta, steps,
+                    color=theme.RAW_TRACE, alpha=0.5, linewidth=0.7)
+
+        ax.set_xlabel(theme.axis_label("time", units.calibration), color="black")
+        ax.set_ylabel(theme.axis_label("speed", units.calibration), color="black")
+        ax.set_title(f"Per-track speed (top {len(ids)})", color="black")
+        fig.tight_layout()
+        _finish(fig, stem, formats, dpi)
+
+
+def plot_directed_hist(
+    directed: pd.DataFrame,
+    units: Units,
+    column: str,
+    xlabel: str,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """Distribution of one directed-track property (run length or velocity).
+
+    ``directed`` is :func:`compute.directed_metrics`'s output — already
+    restricted to directed tracks — and ``column`` is ``"_disp"`` (net
+    displacement, the run length) or ``"_vel"`` (that displacement over the
+    track's duration).
+    """
+    if directed.empty:
+        return
+    with theme.style():
+        fig = Figure(figsize=(FIG_W, FIG_H))
+        ax = fig.subplots()
+        _grid_behind(ax)
+
+        v = pd.to_numeric(directed[column], errors="coerce").to_numpy(dtype=float)
+        v = v[np.isfinite(v)]
+        if v.size:
+            lo, hi = _pct_limits(v)
+            ax.hist(v, bins=np.linspace(lo, hi, 40),
+                    color=theme.MOTILITY_COLORS["directed"], zorder=2)
+            ax.set_xlim(lo, hi)
+            ax.set_title(
+                f"Directed tracks — n = {v.size}  (median {np.median(v):.3g})",
+                color="black")
+        else:
+            ax.annotate("no directed tracks", xy=(0.5, 0.5),
+                        xycoords="axes fraction", ha="center", va="center",
+                        fontsize=_FONT_ANNOT, color="#52514e")
+            ax.set_title("Directed tracks — n = 0", color="black")
+
+        ax.set_xlabel(xlabel, color="black")
+        ax.set_ylabel("# tracks", color="black")
+        ax.grid(axis="x", visible=False)
+        fig.tight_layout()
+        _finish(fig, stem, formats, dpi)
+
+
+def plot_directed_joint(
+    directed: pd.DataFrame,
+    units: Units,
+    stem: Path,
+    formats,
+    dpi: int,
+) -> None:
+    """Run length against velocity, directed tracks only, with marginals."""
+    if directed.empty:
+        return
+    with theme.style():
+        fig = Figure(figsize=(FIG_W, FIG_H))
+        gs = fig.add_gridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4],
+                              wspace=0.05, hspace=0.05,
+                              left=0.17, right=0.97, top=0.90, bottom=0.15)
+        ax = fig.add_subplot(gs[1, 0])
+        ax_top = fig.add_subplot(gs[0, 0], sharex=ax)
+        ax_right = fig.add_subplot(gs[1, 1], sharey=ax)
+        for a in (ax, ax_top, ax_right):
+            _grid_behind(a)
+        ax_top.tick_params(labelbottom=False)
+        ax_right.tick_params(labelleft=False)
+
+        ax.scatter(directed["_disp"], directed["_vel"], s=26,
+                   color=theme.MOTILITY_COLORS["directed"], edgecolor="white",
+                   linewidth=0.6, alpha=0.85, zorder=2)
+        x_lo, x_hi = _pct_limits(directed["_disp"])
+        y_lo, y_hi = _pct_limits(directed["_vel"])
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_ylim(y_lo, y_hi)
+        ax_top.hist(directed["_disp"], bins=np.linspace(x_lo, x_hi, 40),
+                    color=theme.NEUTRAL, zorder=2)
+        ax_right.hist(directed["_vel"], bins=np.linspace(y_lo, y_hi, 40),
+                      orientation="horizontal", color=theme.NEUTRAL, zorder=2)
+        n_off = int((
+            (directed["_disp"] < x_lo) | (directed["_disp"] > x_hi)
+            | (directed["_vel"] < y_lo) | (directed["_vel"] > y_hi)
+        ).sum())
+        if n_off:
+            ax.annotate(f"{n_off} track(s) outside axis range",
+                        xy=(0.99, 0.01), xycoords="axes fraction", ha="right",
+                        va="bottom", fontsize=_FONT_ANNOT_SMALL, color="#52514e")
+        ax_top.set_title(f"Directed tracks — n = {len(directed)}", color="black")
+
+        ax.set_xlabel(theme.axis_label("displacement", units.calibration), color="black")
+        ax.set_ylabel(theme.axis_label("speed", units.calibration), color="black")
+        ax_top.set_ylabel("# tracks", color="black", fontsize=_FONT_ANNOT)
+        ax_right.set_xlabel("# tracks", color="black", fontsize=_FONT_ANNOT)
         _finish(fig, stem, formats, dpi)

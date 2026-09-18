@@ -232,3 +232,54 @@ def test_motility_classes_uses_theme_colours(tmp_path):
                                         ["png"], 40, _capture=captured)
     drawn = {to_hex(c).lower() for c in captured["colors"]}
     assert drawn <= {to_hex(c).lower() for c in theme.MOTILITY_COLORS.values()}
+
+
+DISTRIBUTION_FIGURES = ["length_hist", "path_length_hist", "speed_hist",
+                        "length_per_track", "speed_per_track",
+                        "directed_displacement", "directed_velocity",
+                        "directed_displacement_vs_velocity"]
+
+
+def test_distribution_figures_are_written(tmp_path):
+    synthetic_movie(tmp_path / "g" / "m.tif", n_frames=60, n_spots=8, seed=4)
+    cfg = msd_config(tmp_path, tmp_path / "g", figures=DISTRIBUTION_FIGURES)
+    assert runner.run(cfg).exit_code == 0
+    msd_dir = tmp_path / "out" / "g" / "m" / "msd"
+    written = {p.stem for p in msd_dir.glob("*.png")}
+    # The directed figures only exist when some track is classified directed.
+    assert {"length_hist", "path_length_hist", "speed_hist", "length_per_track",
+            "speed_per_track"} <= written
+    assert written <= set(DISTRIBUTION_FIGURES)
+
+
+def test_directed_figures_when_directed_tracks_exist(tmp_path, monkeypatch):
+    """A movie of steadily drifting spots yields directed tracks."""
+    import numpy as np
+    rng = np.random.default_rng(2)
+    size, n_frames = 96, 40
+    yy, xx = np.mgrid[:size, :size]
+    stack = np.full((n_frames, size, size), 100.0)
+    starts = rng.uniform(10, 40, size=(5, 2))
+    for t in range(n_frames):
+        for cy, cx in starts + t * 1.2:
+            stack[t] += 1200 * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / 8.0)
+    path = tmp_path / "g" / "drift.tif"
+    path.parent.mkdir(parents=True)
+    tifffile.imwrite(str(path), stack.astype(np.uint16))
+
+    cfg = msd_config(tmp_path, tmp_path / "g", figures=DISTRIBUTION_FIGURES)
+    assert runner.run(cfg).exit_code == 0
+    msd_dir = tmp_path / "out" / "g" / "drift" / "msd"
+    fits = pd.read_csv(msd_dir / "msd_fits.csv")
+    assert (fits["motility_class"] == "directed").any()
+    assert (msd_dir / "directed_displacement.png").exists()
+    assert (msd_dir / "directed_velocity.png").exists()
+    assert (msd_dir / "directed_displacement_vs_velocity.png").exists()
+
+
+def test_max_tracks_plot_limits_per_track_figures(tmp_path):
+    synthetic_movie(tmp_path / "g" / "m.tif", n_spots=8, seed=5)
+    cfg = msd_config(tmp_path, tmp_path / "g", figures=["length_per_track"],
+                     max_tracks_plot=2)
+    assert runner.run(cfg).exit_code == 0
+    assert (tmp_path / "out" / "g" / "m" / "msd" / "length_per_track.png").exists()
