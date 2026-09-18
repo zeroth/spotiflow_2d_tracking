@@ -53,8 +53,12 @@ from .figures_movie import (
 )
 
 #: Bin edges per comparison histogram. Shared by every group, so the bin
-#: width is identical and raw counts can be compared bar for bar.
-GROUP_BINS = 45
+#: width is identical and raw counts can be compared bar for bar. Reuses
+#: figures_group's constant rather than redefining it: shared_hist_axes bins
+#: with this value and the harmonised call sites' plot_metric_summary bins
+#: with figures_group.GROUP_BINS, so a second copy that drifted out of sync
+#: would silently break the harmonised y_max it also computes here.
+GROUP_BINS = figures_group.GROUP_BINS
 #: Fill opacity for an overlaid group histogram. The outline stays fully
 #: opaque, so where two groups overlap the fills tint each other but each
 #: group's own profile is still traceable.
