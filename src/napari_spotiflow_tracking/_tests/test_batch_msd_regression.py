@@ -1,7 +1,15 @@
 """The ported msd analysis must reproduce the old script's numbers.
 
-Opt-in: `pytest -m slow`. It runs the old script's analysis path and the new
-analysis over the same tracks and compares the fit tables.
+Marked `slow` so it can be selected or excluded explicitly (`-m slow` /
+`-m "not slow"`); it currently also runs in a bare `pytest` because this repo
+sets no `addopts` to filter markers by default. It runs the old script's
+analysis path and the new analysis over the same tracks and compares the fit
+tables.
+
+Both implementations import the same fit functions from `_track_properties`,
+so this verifies the ported orchestration (track filtering, column assembly,
+the `track_table` merge, unit scaling) — it cannot catch a change inside the
+shared fit itself.
 """
 import importlib.util
 import sys
@@ -31,8 +39,19 @@ def _tracks(n_tracks=12, n_frames=50, seed=0):
     rng = np.random.default_rng(seed)
     rows = []
     for tid in range(n_tracks):
-        drift = 0.8 if tid % 3 == 0 else 0.0
-        pos = np.cumsum(rng.normal(drift, 1.0, size=(n_frames, 2)), axis=0)
+        if tid == 0:
+            # A confined track (mean-reverting AR(1), relaxation time ~1
+            # frame) so the fixture exercises the "constrained" (alpha < 0.4)
+            # branch too — the free random walks below only ever come out
+            # diffusive or directed, which would let a drift in the
+            # constrained boundary or in "unclassified" handling pass
+            # unnoticed.
+            pos = np.zeros((n_frames, 2))
+            for i in range(1, n_frames):
+                pos[i] = 0.3 * pos[i - 1] + rng.normal(0.0, 1.0, size=2)
+        else:
+            drift = 0.8 if tid % 3 == 0 else 0.0
+            pos = np.cumsum(rng.normal(drift, 1.0, size=(n_frames, 2)), axis=0)
         for frame, (y, x) in enumerate(pos):
             rows.append({"frame": frame, "y": y, "x": x, "particle": tid})
     return pd.DataFrame(rows)
@@ -75,7 +94,10 @@ def test_class_counts_match_the_old_script():
         tracked, bulk.Calibration(sigma_nm=35.0), max_lag=20, min_length=5)
     _, new_fits = compute.compute_msd_analysis(
         tracked, Units(Calibration(), sigma_nm=35.0), max_lag=20, min_length=5)
-    assert bulk.class_counts(old_fits) == compute.class_counts(new_fits)
+    old_counts = bulk.class_counts(old_fits)
+    assert old_counts == compute.class_counts(new_fits)
+    represented = {k for k, v in old_counts.items() if v}
+    assert {"constrained", "diffusive", "directed"} <= represented
 
 
 def test_track_table_matches_the_old_columns():
