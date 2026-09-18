@@ -124,8 +124,10 @@ spotiflow-batch run my_run.yaml                       # process every movie
 spotiflow-batch list-outputs                          # figures/tables the analyses can write
 ```
 
-A run pre-processes each movie, detects spots, optionally fits 2D Gaussians and
-masks, links tracks, and writes one folder per movie plus a run-level summary.
+A run pre-processes each movie, detects spots, fits 2D Gaussians and spot masks
+(on by default), links tracks, then runs every enabled analysis — per movie,
+per group and across groups — writing one folder per movie plus a run-level
+summary.
 
 ### The config
 
@@ -170,13 +172,16 @@ tracking:
   search_range: 3
   memory: 10
 
-measure_on: raw               # raw | preprocessed — where intensities are read
+measure_on: null              # raw | preprocessed; unset = each analysis decides for itself
 
 outputs:
   formats: [png, svg]
   dpi: 300
   save_preprocessed: false
-  save_masks: true
+  save_masks: true            # large: see Outputs
+
+analyses:                     # enabled analyses and their settings — see Analyses
+  msd: {}                     # the `tracking` preset already enables this one
 ```
 
 Any value can be overridden on the command line, so one config covers a sweep:
@@ -189,6 +194,13 @@ Values resolve as built-in defaults < modality preset < your YAML < `--set`.
 Unknown keys warn and are ignored; wrong types, missing inputs and impossible
 combinations are reported together, before any movie is read. `validate` runs
 exactly those checks and nothing else.
+
+`measure_on` is unset by default, which means every analysis reads intensities
+from whichever movie its own science calls for — `msd`, for one, samples the
+preprocessed stack. Set it to `raw` or `preprocessed` to force one stack on
+every analysis at once (the `bleaching` preset does exactly that, since its
+uint16 mean subtraction clips the background to zero), or set
+`analyses.<name>.measure_on` to change just one analysis.
 
 ### Modalities
 
@@ -221,7 +233,10 @@ downstream is the same either way, and `run.log` records what ran.
     spots.csv, tracks.csv
     preprocessed.tif                 only when save_preprocessed: true
     mask.tif                         written unless save_masks: false
-    movie_status.json               marks the movie complete, for skip_existing
+    movie_status.json                marks the movie complete, for skip_existing
+    <analysis>/                      that analysis's per-movie tables and figures
+  <group>/_summary/<analysis>/       the group's movies pooled
+  _comparison/<analysis>/            only when the run has more than one group
 ```
 
 Every spot is fitted with a 2D Gaussian by default (`detection.fit.enabled: true`), so
@@ -237,6 +252,12 @@ issue), so it needs no extra install to be on by default. The two backends produ
 the same schema and closely matching values — not bit-identical, since the scipy
 fit bounds its search while the batched fit does not — and the fallback is slower
 (roughly 5x on one 15,457-spot, 827-frame movie in testing) but not prohibitively so.
+
+`mask.tif` is a labelled `(T, Y, X)` int32 stack the full size of the movie, so
+it is the largest thing a run writes — of the order of 200 MB for one
+827-frame 256×256 movie, and tens of GB for a folder of a hundred. Set
+`outputs.save_masks: false` when you only want the tables and figures; the fit
+columns in `spots.csv` are unaffected.
 
 `tracks.csv` holds every track trackpy links, however short — nothing is dropped
 by length at write time. Each analysis applies its own minimum instead (e.g.
@@ -268,6 +289,10 @@ Detection and tracking run once per movie, and every enabled analysis reads
 those results, writing tables and figures per movie, per group, and across
 groups. `spotiflow-batch list-outputs <name>` lists what an analysis can write,
 and `figures`/`tables` select from it (`all`, `none`, or a list of names).
+One list covers every level at once: anything not named is off per movie, per
+group *and* across groups, so `figures: [motility_comparison]` writes that one
+comparison figure and nothing else — name the per-movie and per-group figures
+too if you want them. Unknown names warn and are ignored.
 
 **`msd`** — mean squared displacement and motility classification, enabled by
 the `tracking` preset:
@@ -279,6 +304,7 @@ analyses:
     min_length: 5         # shortest track admitted to the fits
     sigma_nm: 35          # static localization error, used only with calibration
     max_tracks_plot: 200  # cap for the per-track figures
+    measure_on: null      # inherited; msd samples the preprocessed stack by default
     figures: all
     tables: all
 ```
@@ -294,8 +320,14 @@ explanatory figures (construction, archetypes, shape comparison) that follow
 Figure 1 of
 [Schirripa Spagnolo & Luin, *Int. J. Mol. Sci.* **25**, 8660 (2024)](https://pmc.ncbi.nlm.nih.gov/articles/PMC11354962/).
 
+`track_analysis.csv` carries each track's geometry, its intensity sampled from
+the preprocessed movie (see `measure_on`), and its D, α and class.
+
 Each group gets the same metrics pooled over its movies in
-`<group>/_summary/msd/`, and a run with more than one group also writes
+`<group>/_summary/msd/` — `motility_summary.csv`, `group_fits.csv` and eight
+pooled figures, built by reading the per-movie CSVs back off disk, so a
+`skip_existing` rerun summarises the movies it skipped too. A run with more
+than one group also writes
 `_comparison/msd/`: overlaid group distributions, their density versions, the
 harmonised per-group figures on a shared axis range, and
 `comparison_summary.csv`. Group colours are assigned in `inputs` order and are

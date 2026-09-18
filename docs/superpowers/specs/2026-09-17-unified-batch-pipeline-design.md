@@ -49,7 +49,7 @@ One batch pipeline, inside the package, driven by a YAML config:
 | Location | Subpackage `napari_spotiflow_tracking.batch`, console command `spotiflow-batch` |
 | Config format | YAML, plus `--set key.path=value` CLI overrides |
 | Preprocessing | Ordered list of steps mirroring the GUI chain |
-| Intensity sampling | `measure_on: raw \| preprocessed`, global default with per-analysis override |
+| Intensity sampling | `measure_on: raw \| preprocessed`, unset by default (each analysis's `default_measure_on` decides); a global value overrides every analysis, a per-analysis value overrides both |
 | Modality | Preset of defaults; analyses are enable-able modules, combinable |
 | Inputs | List of entries (file or folder); each entry is a group |
 | Output selection | Per-analysis catalogue of named figures/tables; user lists names |
@@ -58,6 +58,7 @@ One batch pipeline, inside the package, driven by a YAML config:
 | Internals | Analysis plugins + dataclass config (no new framework) |
 | Fitting/masks | On by default; torchimize when importable, else the per-frame scipy fitter; mask.tif written unless save_masks is false. Exception: the `papa` preset sets both off — it only counts spots (user, 2026-09-18) |
 | Minimum track length | Per analysis (e.g. msd.min_length), never at tracking time — tracks.csv keeps every linked track (user, 2026-09-18) |
+| Output selection granularity | `figures`/`tables` are one list per analysis, applied at every level at once: naming `motility_comparison` also silences the per-movie and per-group figures. Per-level selection (`figures: {movie: [...], comparison: [...]}`) is to be settled before phase 3 (review, 2026-09-18) |
 
 ## Architecture
 
@@ -121,8 +122,12 @@ to keep palette slots stable.
 
 `measure_on_for(analysis, settings, cfg)` resolves the movie an analysis
 samples: `None` when `default_measure_on == "none"`, else
-`analyses.<name>.measure_on` when set, else the top-level `measure_on`.
-Validation rejects an `analyses.<name>.measure_on` other than raw/preprocessed.
+`analyses.<name>.measure_on` when set, else the top-level `measure_on` when
+set, else the analysis's own `default_measure_on`. The top-level key is unset
+(`null`) by default so each analysis keeps the stack its science needs — `msd`
+the preprocessed movie, `bleaching` the raw one — and setting it is a
+deliberate, run-wide override. Validation rejects a `measure_on` other than
+raw/preprocessed at either level, but accepts unset at both.
 
 `OutputSpec(name, level: movie|group|comparison, kind: figure|table, description)`.
 Group and comparison hooks read the per-movie tables from disk, so they also
@@ -181,7 +186,7 @@ tracking:
   search_range: 3
   memory: 10
 
-measure_on: raw
+measure_on: null              # unset = each analysis decides; raw | preprocessed overrides them all
 
 outputs:
   formats: [png, svg]
