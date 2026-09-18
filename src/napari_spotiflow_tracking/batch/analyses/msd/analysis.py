@@ -10,7 +10,7 @@ from __future__ import annotations
 from ... import theme
 from ...outputs import OutputSpec, save_table
 from ..base import Analysis, measure_on_for
-from . import compute, figures_movie
+from . import compute, figures_group, figures_movie
 from .units import Units
 
 CATALOGUE = (
@@ -36,6 +36,22 @@ CATALOGUE = (
     OutputSpec("directed_velocity", "movie", "figure", "Velocity distribution of directed tracks"),
     OutputSpec("directed_displacement_vs_velocity", "movie", "figure",
                "Run length vs velocity, directed tracks only, with marginals"),
+    OutputSpec("motility_summary", "group", "table", "Per-movie motility class counts"),
+    OutputSpec("motility_summary", "group", "figure",
+               "Motility class share per movie, as stacked bars"),
+    OutputSpec("group_fits", "group", "table", "Every movie's msd_fits rows, with a movie column"),
+    OutputSpec("d_vs_alpha_summary", "group", "figure",
+               "Group-level D vs alpha, every track plus one marker per movie"),
+    OutputSpec("length_summary", "group", "figure", "Group-level track duration distribution"),
+    OutputSpec("speed_summary", "group", "figure", "Group-level mean-speed distribution"),
+    OutputSpec("length_vs_speed_summary", "group", "figure",
+               "Group-level track duration vs mean speed"),
+    OutputSpec("directed_displacement_summary", "group", "figure",
+               "Group-level run-length distribution of directed tracks"),
+    OutputSpec("directed_velocity_summary", "group", "figure",
+               "Group-level velocity distribution of directed tracks"),
+    OutputSpec("directed_displacement_vs_velocity_summary", "group", "figure",
+               "Group-level run length vs velocity, directed tracks only"),
 )
 
 _TABLE_FIGURES = (
@@ -187,3 +203,60 @@ class MsdAnalysis(Analysis):
                         out_dir / "directed_displacement_vs_velocity", formats, dpi)
 
         return record
+
+    def summarize_group(self, group, movie_dirs, settings, select, out_dir, cfg) -> None:
+        units = Units(cfg.calibration, settings["sigma_nm"])
+        per_movie = figures_group.read_movie_frames(
+            movie_dirs, settings["min_length"], units)
+        if not per_movie:
+            return
+
+        formats, dpi = cfg.outputs.formats, cfg.outputs.dpi
+        if select.table("motility_summary"):
+            save_table(figures_group.motility_summary_table(per_movie),
+                      out_dir / "motility_summary.csv")
+        if select.table("group_fits"):
+            save_table(figures_group.group_fits_table(per_movie),
+                      out_dir / "group_fits.csv")
+
+        if select.figure("motility_summary"):
+            figures_group.plot_motility_summary(
+                per_movie, out_dir / "motility_summary", formats, dpi)
+        if select.figure("d_vs_alpha_summary"):
+            figures_group.plot_d_vs_alpha_summary(
+                per_movie, units, out_dir / "d_vs_alpha_summary", formats, dpi)
+
+        props_frames = [(label, props) for label, _, props, _ in per_movie]
+        if select.figure("length_summary"):
+            figures_group.plot_metric_summary(
+                props_frames, "_dur", theme.axis_label("duration", units.calibration),
+                1.0, out_dir / "length_summary", formats, dpi)
+        if select.figure("speed_summary"):
+            figures_group.plot_metric_summary(
+                props_frames, "mean_speed",
+                f"Mean speed ({theme.unit('speed', units.calibration)})",
+                units.length_scale / units.delta,
+                out_dir / "speed_summary", formats, dpi)
+        if select.figure("length_vs_speed_summary"):
+            figures_group.plot_length_vs_speed_summary(
+                per_movie, units, out_dir / "length_vs_speed_summary", formats, dpi)
+
+        directed_frames = [(label, directed) for label, _, _, directed in per_movie]
+        if select.figure("directed_displacement_summary"):
+            figures_group.plot_metric_summary(
+                directed_frames, "_disp",
+                f"Run length ({theme.unit('length', units.calibration)})", 1.0,
+                out_dir / "directed_displacement_summary", formats, dpi)
+        if select.figure("directed_velocity_summary"):
+            figures_group.plot_metric_summary(
+                directed_frames, "_vel",
+                f"Velocity ({theme.unit('speed', units.calibration)})", 1.0,
+                out_dir / "directed_velocity_summary", formats, dpi)
+        if select.figure("directed_displacement_vs_velocity_summary"):
+            figures_group.plot_joint_summary(
+                directed_frames, "_disp", "_vel",
+                f"Run length ({theme.unit('length', units.calibration)})",
+                f"Velocity ({theme.unit('speed', units.calibration)})",
+                "Directed run length vs velocity",
+                out_dir / "directed_displacement_vs_velocity_summary", formats, dpi,
+                color_by_class=False)
