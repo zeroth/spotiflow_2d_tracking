@@ -6,7 +6,6 @@ import warnings
 
 from .analyses import base
 from .config import FIGURE_FORMATS, MODALITIES, ConfigError, ConfigWarning, PipelineConfig
-from .detect import torchimize_available
 from .outputs import OutputSelector
 from .preprocess import validate_steps
 

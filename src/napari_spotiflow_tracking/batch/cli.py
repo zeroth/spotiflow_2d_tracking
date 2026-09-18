@@ -23,8 +23,9 @@ SECTION_HELP = {
     "calibration": "Set both to report lengths in µm and times in s.",
     "preprocessing": "Steps run top to bottom. Available: crop, add, subtract, "
                      "walking_average, gaussian_blur, background, n2v.",
-    "detection": "method: spotiflow or log. fit.enabled adds a 2D Gaussian fit and "
-                 "spot masks (needs torchimize).",
+    "detection": "method: spotiflow or log. fit.enabled (on by default) adds a 2D "
+                 "Gaussian fit and spot masks: torchimize when available, else the "
+                 "scipy fallback.",
     "tracking": "trackpy linking; tracks shorter than min_track_length are dropped.",
     "measure_on": "raw or preprocessed: the movie analyses read intensities from, "
                   "unless an analysis overrides it.",

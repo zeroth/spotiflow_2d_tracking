@@ -24,8 +24,18 @@ def torchimize_available() -> bool:
     return True
 
 
-def fit_backend() -> str:
-    """The fitting backend in use: batched torchimize when importable, else scipy."""
+def fit_backend(device: str) -> str:
+    """The fitting backend to use on ``device``.
+
+    ``torchimize`` when importable and ``device`` is not ``"cpu"``, else the
+    per-frame scipy fallback. The batched LM solver's CPU path has a known
+    numerical-stability issue (a ``torch.linalg.lstsq`` CPU LAPACK assertion,
+    seen on real data — see ``fit_spots``), so it is never attempted on cpu;
+    scipy is chosen up front there instead of running the batched path to
+    failure and redoing the movie.
+    """
+    if device == "cpu":
+        return "scipy"
     return "torchimize" if torchimize_available() else "scipy"
 
 
@@ -67,14 +77,24 @@ def _fit_frames_scipy(stack: np.ndarray, df: pd.DataFrame, fit: FitSettings) -> 
     """Per-frame scipy fit producing the columns ``fit_all_frames_gpu`` produces.
 
     Slower than the batched torchimize path, but it needs no torch — so fitting
-    can be on by default on any install. Column names and order match exactly,
-    because ``make_gpu_spot_mask`` consumes them and spots.csv must have one
-    schema regardless of backend. A failed fit gives NaN in the fit columns,
-    same as the GPU path.
+    can be on by default on any install. Matches the batched path's support
+    (``patch_radius = fit.window``, i.e. the same crop size as ``win``) and its
+    border rule (a spot within ``win`` pixels of an edge, or off-stack in time,
+    gets NaN and no mask label on both backends — see ``_extract_crops_vec``),
+    so ``spot_radius``, ``area`` and the painted mask agree closely between
+    backends. Column names and order match exactly, because ``make_gpu_spot_mask``
+    consumes them and spots.csv must have one schema regardless of backend.
+
+    Not bit-identical, though: ``_fit_single_spot_scipy`` bounds x0/y0 and sigma
+    during optimization while the batched LM fit is unbounded, so fitted values
+    agree closely (small-pixel/percent level on well-formed spots) but not
+    exactly — see ``test_scipy_and_torchimize_fits_agree_closely``.
     """
     from .._fitting import _fit_single_spot_scipy
 
-    patch_radius = fit.window * 2
+    win = fit.window
+    patch_radius = win
+    T, H, W = stack.shape
     n = len(df)
     amp = np.full(n, np.nan, dtype=np.float64)
     x_fit = np.full(n, np.nan, dtype=np.float64)
@@ -86,7 +106,15 @@ def _fit_frames_scipy(stack: np.ndarray, df: pd.DataFrame, fit: FitSettings) -> 
     ys = df["y"].to_numpy()
     xs = df["x"].to_numpy()
     ts = df["time"].to_numpy().astype(np.int64)
-    for i in range(n):
+    pts_y = np.round(ys).astype(np.int64)
+    pts_x = np.round(xs).astype(np.int64)
+    # Same border/frame-range rule as _extract_crops_vec, so both backends
+    # leave the same spots as NaN with no mask label.
+    valid = ((pts_y >= win) & (pts_y < H - win)
+             & (pts_x >= win) & (pts_x < W - win)
+             & (ts >= 0) & (ts < T))
+
+    for i in np.where(valid)[0]:
         result = _fit_single_spot_scipy(stack[ts[i]], (ys[i], xs[i]), patch_radius)
         if not result.success:
             continue
@@ -94,8 +122,8 @@ def _fit_frames_scipy(stack: np.ndarray, df: pd.DataFrame, fit: FitSettings) -> 
         # on the *rounded* spot position, and the fit's local offset (y0, x0) is
         # added back to it to get an absolute coordinate.
         amp[i] = result.amplitude
-        x_fit[i] = round(xs[i]) + result.x0
-        y_fit[i] = round(ys[i]) + result.y0
+        x_fit[i] = pts_x[i] + result.x0
+        y_fit[i] = pts_y[i] + result.y0
         sigma_x[i] = abs(result.sigma_x)
         sigma_y[i] = abs(result.sigma_y)
         bg[i] = result.background
@@ -107,25 +135,31 @@ def _fit_frames_scipy(stack: np.ndarray, df: pd.DataFrame, fit: FitSettings) -> 
 def fit_spots(stack: np.ndarray, spots: pd.DataFrame, fit: FitSettings, device: str):
     """Gaussian fit + labelled mask, as scripts/bulk_track_analysis.py does.
 
-    Uses the batched torchimize backend when importable, else a per-frame scipy
-    fallback (``_fit_frames_scipy``) — see ``fit_backend()``. Both feed the same
-    ``make_gpu_spot_mask``, so spots.csv has one schema regardless of backend.
-    If the batched CPU solver itself blows up on a pathological batch (seen on
-    some CPU LAPACK builds as a ``RuntimeError`` from ``torch.linalg.lstsq``),
-    this movie's fit degrades to the scipy backend rather than failing the run.
+    Uses the batched torchimize backend on GPU devices when importable, else a
+    per-frame scipy fallback (``_fit_frames_scipy``) — see ``fit_backend()``.
+    Both feed the same ``make_gpu_spot_mask``, so spots.csv has one schema
+    regardless of backend. On ``device == "cpu"``, scipy is chosen up front:
+    torchimize's batched CPU solver has a known numerical-stability issue (a
+    ``torch.linalg.lstsq`` CPU LAPACK assertion, seen on real data), so it is
+    never attempted there. On a GPU device, an unexpected torchimize failure
+    still degrades this movie's fit to scipy rather than failing the run —
+    except GPU memory exhaustion, which is re-raised: a movie that doesn't fit
+    in memory should fail loudly, not silently become the much slower path.
 
     Returns consistent columns even for empty input: frame, y, x, amp, x_fit, y_fit,
     sigma_x, sigma_y, bg, area, mean_intensity, max_intensity, spot_radius.
     """
     from .._fitting import fit_all_frames_gpu, make_gpu_spot_mask
 
-    backend = fit_backend()
+    backend = fit_backend(device)
     log.info("fitting %d spot(s) with the %s backend", len(spots), backend)
     df = spots.rename(columns={"frame": "time"})
     if backend == "torchimize":
         try:
             fitted = fit_all_frames_gpu(stack, df, win=fit.window, device=device)
         except RuntimeError as exc:
+            if type(exc).__name__ == "OutOfMemoryError" or "out of memory" in str(exc).lower():
+                raise
             log.warning("torchimize fit failed (%s); falling back to the scipy "
                        "backend for this movie", exc)
             fitted = _fit_frames_scipy(stack, df, fit)

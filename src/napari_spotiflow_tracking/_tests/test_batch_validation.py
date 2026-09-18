@@ -94,10 +94,8 @@ def test_unknown_output_name_warns(demo):
         validate(_cfg(analyses={"demo": {"figures": ["plots"]}}))
 
 
-def test_fit_does_not_require_torchimize(monkeypatch):
+def test_fit_does_not_require_torchimize():
     """The scipy fallback means a missing torchimize is not a config error."""
-    monkeypatch.setattr("napari_spotiflow_tracking.batch.validation.torchimize_available",
-                        lambda: False)
     validate(_cfg(detection={"fit": {"enabled": True}}))
 
 

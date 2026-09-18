@@ -1,4 +1,6 @@
 """Detection (LoG, fake Spotiflow), optional fit, and tracking stages."""
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -115,18 +117,28 @@ def test_fit_spots_adds_fit_columns():
 
 def test_fit_backend_prefers_torchimize_when_available(monkeypatch):
     monkeypatch.setattr(detect, "torchimize_available", lambda: True)
-    assert detect.fit_backend() == "torchimize"
+    assert detect.fit_backend("cuda") == "torchimize"
     monkeypatch.setattr(detect, "torchimize_available", lambda: False)
-    assert detect.fit_backend() == "scipy"
+    assert detect.fit_backend("cuda") == "scipy"
+    # cpu always uses the scipy fallback: the batched solver's CPU LM path has
+    # a known numerical-stability issue (see fit_spots), so it is never tried.
+    monkeypatch.setattr(detect, "torchimize_available", lambda: True)
+    assert detect.fit_backend("cpu") == "scipy"
 
 
 def test_scipy_fit_produces_the_same_columns_as_torchimize(monkeypatch):
-    """The fallback must not change spots.csv's schema."""
+    """The fallback must not change spots.csv's schema.
+
+    fit_backend forces scipy on device="cpu" regardless of torchimize's
+    availability, so the two backends are selected directly here rather than
+    through the device argument.
+    """
     stack = _blob_stack(n_frames=2)
     spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
     fit = FitSettings(enabled=True)
+    monkeypatch.setattr(detect, "fit_backend", lambda device: "torchimize")
     gpu_spots, gpu_mask = detect.fit_spots(stack, spots, fit, "cpu")
-    monkeypatch.setattr(detect, "torchimize_available", lambda: False)
+    monkeypatch.setattr(detect, "fit_backend", lambda device: "scipy")
     cpu_spots, cpu_mask = detect.fit_spots(stack, spots, fit, "cpu")
     assert list(cpu_spots.columns) == list(gpu_spots.columns)
     assert len(cpu_spots) == len(gpu_spots)
@@ -142,3 +154,91 @@ def test_scipy_fit_recovers_blob_positions(monkeypatch):
     ok = fitted[["x_fit", "y_fit"]].notna().all(axis=1)
     assert ok.sum() >= len(fitted) - 1
     assert (fitted.loc[ok, "sigma_x"] > 0).all()
+
+
+def test_scipy_and_torchimize_fits_agree_closely():
+    """Same support and border rule (patch_radius = fit.window on both), so the
+    backends must agree on which spots are NaN, and fit values must be close.
+    Not bit-identical: the scipy fit bounds its search, the batched LM does not.
+    """
+    pytest.importorskip("torchimize")
+    from napari_spotiflow_tracking._fitting import fit_all_frames_gpu
+
+    stack = _blob_stack(n_frames=2)
+    spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
+    fit = FitSettings(enabled=True)
+    df = spots.rename(columns={"frame": "time"})
+
+    gpu = fit_all_frames_gpu(stack, df, win=fit.window, device="cpu")
+    cpu = detect._fit_frames_scipy(stack, df, fit)
+
+    gpu_nan = gpu[["x_fit", "y_fit"]].isna().any(axis=1)
+    cpu_nan = cpu[["x_fit", "y_fit"]].isna().any(axis=1)
+    assert (gpu_nan == cpu_nan).all()
+
+    ok = ~gpu_nan
+    assert ok.any()
+    assert np.allclose(gpu.loc[ok, "x_fit"], cpu.loc[ok, "x_fit"], atol=0.25)
+    assert np.allclose(gpu.loc[ok, "y_fit"], cpu.loc[ok, "y_fit"], atol=0.25)
+    assert np.allclose(gpu.loc[ok, "sigma_x"], cpu.loc[ok, "sigma_x"], rtol=0.2)
+    assert np.allclose(gpu.loc[ok, "sigma_y"], cpu.loc[ok, "sigma_y"], rtol=0.2)
+
+
+def test_fit_empty_spots_scipy_path_returns_empty_mask():
+    """Zero spots on the scipy backend (forced via device='cpu') is a distinct
+    code path from the torchimize one and needs its own empty-input check."""
+    assert detect.fit_backend("cpu") == "scipy"
+    stack = np.zeros((2, 8, 8), np.uint16)
+    empty = pd.DataFrame({"frame": pd.Series(dtype=int), "y": pd.Series(dtype=float),
+                          "x": pd.Series(dtype=float)})
+    empty_spots, empty_mask = detect.fit_spots(stack, empty, FitSettings(enabled=True), "cpu")
+    assert len(empty_spots) == 0 and empty_mask.shape == stack.shape and not empty_mask.any()
+
+    blob_stack = _blob_stack(n_frames=2, size=8)
+    blob_spots = detect.detect_stack(blob_stack, DetectionSettings(method="log"), model=None)
+    fitted_spots, _ = detect.fit_spots(blob_stack, blob_spots, FitSettings(enabled=True), "cpu")
+    assert list(empty_spots.columns) == list(fitted_spots.columns)
+
+
+def test_fit_spots_falls_back_to_scipy_on_a_generic_runtime_error(monkeypatch, caplog):
+    """A torchimize failure that isn't GPU-memory-exhaustion degrades this
+    movie's fit to scipy instead of failing the run."""
+    import napari_spotiflow_tracking._fitting as fitting_module
+
+    stack = _blob_stack(n_frames=2)
+    spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
+    monkeypatch.setattr(detect, "torchimize_available", lambda: True)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(fitting_module, "fit_all_frames_gpu", broken)
+
+    with caplog.at_level(logging.WARNING, logger="napari_spotiflow_tracking.batch"):
+        fitted, mask = detect.fit_spots(stack, spots, FitSettings(enabled=True), "cuda")
+
+    assert {"frame", "y", "x", "amp", "x_fit", "y_fit", "sigma_x", "sigma_y", "bg",
+            "area", "mean_intensity", "max_intensity", "spot_radius"} <= set(fitted.columns)
+    assert mask.any()
+    assert any("falling back to the scipy" in r.getMessage() for r in caplog.records)
+
+
+def test_fit_spots_reraises_gpu_out_of_memory(monkeypatch):
+    """GPU memory exhaustion must fail loudly, not silently become the much
+    slower scipy path."""
+    import napari_spotiflow_tracking._fitting as fitting_module
+
+    stack = _blob_stack(n_frames=2)
+    spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
+    monkeypatch.setattr(detect, "torchimize_available", lambda: True)
+
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    def broken(*args, **kwargs):
+        raise OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(fitting_module, "fit_all_frames_gpu", broken)
+
+    with pytest.raises(OutOfMemoryError):
+        detect.fit_spots(stack, spots, FitSettings(enabled=True), "cuda")

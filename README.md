@@ -229,10 +229,13 @@ Every spot is fitted with a 2D Gaussian by default (`detection.fit.enabled: true
 `spots.csv` carries the fit and region-property columns (`amp`, `x_fit`, `y_fit`,
 `sigma_x`, `sigma_y`, `bg`, `area`, `mean_intensity`, `max_intensity`,
 `spot_radius`), and `mask.tif` is written unless `outputs.save_masks` is set to
-`false`. Fitting uses the batched `torchimize` backend when it is importable and a
-per-frame `scipy` fallback otherwise, so it needs no extra install to be on by
-default; the scipy fallback is slower (roughly 5x on one ~18k-spot, 827-frame
-movie in testing) but not prohibitively so.
+`false`. Fitting uses the batched `torchimize` backend on a GPU device when it is
+importable, and a per-frame `scipy` fallback otherwise (including whenever
+`device: cpu`, since the batched solver's CPU path has a known numerical-stability
+issue), so it needs no extra install to be on by default. The two backends produce
+the same schema and closely matching values — not bit-identical, since the scipy
+fit bounds its search while the batched fit does not — and the fallback is slower
+(roughly 5x on one 15,457-spot, 827-frame movie in testing) but not prohibitively so.
 
 One movie failing does not stop the run: its traceback goes to `run.log`, its
 row reads `FAIL`, and the rest carry on. The command exits 0 when everything
