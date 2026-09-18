@@ -1591,3 +1591,111 @@ git add src/napari_spotiflow_tracking/batch/config.py src/napari_spotiflow_track
 git add -f docs/superpowers/specs/2026-09-17-unified-batch-pipeline-design.md
 git commit -m "feat(batch): fit every spot and write masks by default, with a scipy fallback"
 ```
+
+---
+
+### Task 11: tracks.csv keeps every track; minimum length is per analysis
+
+Added 2026-09-18 at the user's request. Phase 1's `detect.track_spots` drops tracks shorter than `tracking.min_track_length` **before writing `tracks.csv`**. The old pipeline never did that: `bulk_track_analysis.py` writes `tracks.csv` unfiltered (L1918-1922) and applies `--min-track-length` only inside the analysis — `compute_msd_analysis(min_length=...)` (L1959), the per-file figure cut (L1984-1987), `_at_least` in the run summary (L2116, L2133) and `_read_group_frames` (L2603). Filtering at write time is destructive: the short tracks are gone from disk, so lowering the threshold later needs a full re-detect/re-track instead of a re-analysis, and every analysis is forced to share one cut-off.
+
+**Files:**
+- Modify: `src/napari_spotiflow_tracking/batch/detect.py` (`track_spots`)
+- Modify: `src/napari_spotiflow_tracking/batch/config.py` (`TrackingSettings`)
+- Modify: `src/napari_spotiflow_tracking/batch/presets/tracking.yaml`, `bleaching.yaml`
+- Modify: `src/napari_spotiflow_tracking/batch/cli.py` (the `tracking` line in `SECTION_HELP`)
+- Modify: `src/napari_spotiflow_tracking/_tests/test_batch_detect.py`, `test_batch_config.py`, `test_batch_runner.py`, `test_batch_msd_analysis.py`, `test_batch_msd_group.py` as needed
+- Modify: `README.md`, `examples/batch/*.yaml`, `docs/superpowers/specs/2026-09-17-unified-batch-pipeline-design.md`
+
+**Interfaces:**
+- Produces: `detect.track_spots(spots, tracking) -> pd.DataFrame` — links and sorts, and no longer drops tracks by length. `TrackingSettings` loses `min_track_length`.
+- Consumers: the `msd` analysis already has its own `min_length` (default 5) and is unaffected in behaviour; later analyses (bleaching, PAPA) carry their own minimum in their own settings.
+
+Decision (user, 2026-09-18): the minimum track length belongs to the analysis, not to tracking. `tracks.csv` keeps everything trackpy links.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `src/napari_spotiflow_tracking/_tests/test_batch_detect.py`, replace the length-filter expectation in `test_tracking_links_filters_and_keeps_columns` (rename it `test_tracking_links_and_keeps_columns`) and add:
+
+```python
+def test_tracking_keeps_short_tracks():
+    """tracks.csv is unfiltered: a one-frame spot survives as its own track."""
+    rows = []
+    for t in range(5):
+        rows.append({"frame": t, "y": 10.0, "x": 10.0 + 0.5 * t, "amp": 1.0})
+    rows.append({"frame": 0, "y": 80.0, "x": 80.0, "amp": 0.0})   # one-frame spot
+    tracks = detect.track_spots(pd.DataFrame(rows),
+                                TrackingSettings(search_range=3, memory=0))
+    assert tracks["particle"].nunique() == 2
+    assert len(tracks) == 6
+    lengths = sorted(tracks.groupby("particle").size())
+    assert lengths == [1, 5]
+```
+
+In `src/napari_spotiflow_tracking/_tests/test_batch_config.py`:
+
+```python
+def test_tracking_has_no_min_track_length():
+    """The minimum length belongs to the analysis, not to tracking."""
+    cfg = load_config(data={})
+    assert not hasattr(cfg.tracking, "min_track_length")
+
+
+def test_min_track_length_in_a_config_warns_and_is_ignored():
+    with pytest.warns(ConfigWarning, match="tracking.min_track_length"):
+        load_config(data={"tracking": {"min_track_length": 10}})
+```
+
+In `src/napari_spotiflow_tracking/_tests/test_batch_msd_analysis.py`:
+
+```python
+def test_short_tracks_reach_tracks_csv_but_not_the_fits(tmp_path):
+    """The msd cut applies to the analysis, not to what tracking wrote."""
+    synthetic_movie(tmp_path / "g" / "m.tif", n_frames=40, n_spots=6, seed=11)
+    cfg = msd_config(tmp_path, tmp_path / "g", min_length=20)
+    assert runner.run(cfg).exit_code == 0
+    movie = tmp_path / "out" / "g" / "m"
+    tracks = pd.read_csv(movie / "tracks.csv")
+    fits = pd.read_csv(movie / "msd" / "msd_fits.csv")
+    lengths = tracks.groupby("particle").size()
+    assert (lengths < 20).any()                     # short tracks are on disk
+    assert set(fits["track_id"]) <= set(lengths[lengths >= 20].index)
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/Scripts/python.exe -m pytest src/napari_spotiflow_tracking/_tests/test_batch_detect.py src/napari_spotiflow_tracking/_tests/test_batch_config.py src/napari_spotiflow_tracking/_tests/test_batch_msd_analysis.py -v`
+Expected: the new tests FAIL — short tracks are dropped; `min_track_length` still exists on `TrackingSettings`.
+
+- [ ] **Step 3: Stop filtering in `track_spots`**
+
+In `detect.py`, delete the two lines that compute `lengths` and filter `tracked`, keeping the column re-join and the `sort_values(["particle", "frame"]).reset_index(drop=True)`. Update the docstring to say that every linked track is written and that each analysis applies its own minimum.
+
+- [ ] **Step 4: Remove the setting**
+
+`config.py`: delete `min_track_length` from `TrackingSettings`.
+`presets/tracking.yaml`: delete the `min_track_length: 5` line (the `msd` analysis's `min_length: 5` default already governs).
+`presets/bleaching.yaml`: delete `min_track_length: 10`; add a comment recording that the bleaching analysis will carry its own minimum (phase 4), so nothing is lost when that preset is next touched.
+`cli.py`: the `SECTION_HELP["tracking"]` line must no longer promise that short tracks are dropped — say "trackpy linking; every linked track is written, and each analysis applies its own minimum length".
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run the three files above, then `.venv/Scripts/python.exe -m pytest src/napari_spotiflow_tracking/_tests -k batch -q`.
+Expected: all PASS. Several existing tests set `min_track_length` in their config — they will now warn about an unknown key. Remove the key from those configs (it is no longer part of the schema); do not silence the warning. Where a test relied on the filter to get a specific track count, fix the test's expectation to the unfiltered count and say so in your report.
+
+- [ ] **Step 6: Re-check the real-data numbers**
+
+Run `spotiflow-batch` on `D:/Data/Sudipta/Arpan/GoodDataset/field2.tif` with `modality: bleaching` (config in the scratchpad) and record the track count in `run_summary.csv`. Before this change the bleaching preset's `min_track_length: 10` gave 118 tracks; unfiltered it should be close to the 1896 tracks the earlier reconstruction found for that movie with the same linking settings. Report both numbers — this is the evidence that the filter was the only difference.
+
+- [ ] **Step 7: Update the docs**
+
+- `README.md`: the `tracking:` block loses `min_track_length`; the outputs section gains a sentence saying `tracks.csv` holds every linked track and each analysis applies its own minimum (`msd.min_length`).
+- `examples/batch/*.yaml`: drop the key; in `bleaching_single_movie.yaml` the comment about tight linking should no longer mention a minimum length.
+- Spec `docs/superpowers/specs/2026-09-17-unified-batch-pipeline-design.md`: remove `min_track_length` from the `tracking:` block in the config schema, and add a Decisions row: `Minimum track length | Per analysis (e.g. msd.min_length), never at tracking time — tracks.csv keeps every linked track (user, 2026-09-18)`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/napari_spotiflow_tracking/batch/detect.py src/napari_spotiflow_tracking/batch/config.py src/napari_spotiflow_tracking/batch/cli.py src/napari_spotiflow_tracking/batch/presets src/napari_spotiflow_tracking/_tests README.md examples/batch
+git add -f docs/superpowers/specs/2026-09-17-unified-batch-pipeline-design.md
+git commit -m "fix(batch): keep every linked track in tracks.csv; minimum length is per analysis"
+```
