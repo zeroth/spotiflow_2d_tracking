@@ -1428,3 +1428,166 @@ git commit -m "test(batch-msd): regression against the old script; document the 
 - Spec coverage for phase 2: `msd` analysis with its catalogue and settings (Tasks 2, 4–6); calibration-aware fits and physical units (Task 1, 3); per-movie tables and all 15 figures of `analyze_folder` (Tasks 2, 4, 5, 6); group summaries (Task 7); cross-group comparison replacing `--compare`, with group colours following `inputs` order (Task 8); regression against the old script (Task 9); docs (Task 9). The MkDocs page stays in build-order item 5.
 - Names used across tasks: `Units(calibration, sigma_nm)` (Task 1 → 2, 7, 8, 9); `compute.compute_msd_analysis(tracked, units, max_lag, min_length) -> (curves, fits)`, `compute.track_table(tracked, image, fits, units)`, `compute.class_counts`, `compute.directed_metrics` (Task 1 → 2, 5, 7); `figures_movie.plot_*(..., stem, formats, dpi)` (Tasks 4–6 → `analysis.run_movie`); `figures_group.read_movie_frames(movie_dirs, min_length, units)` (Task 7 → 8); catalogue names are the output filenames throughout.
 - Deliberate deviations from the old script, each recorded in the porting contract: colours come from the theme (phase-1 ruling — `tab:orange`/`tab:green` fail under protanopia); figures are saved through `outputs.save_figure` (lock-safe, multi-format); `min_track_length` is the analysis's own `min_length` setting rather than a CLI flag shared with tracking.
+
+---
+
+### Task 10: Fitting and masks in the core
+
+Added 2026-09-18 at the user's request: the old bulk pipeline always fitted every spot and painted a labelled mask, so `spots.csv` carried the fit and region properties and `mask.tif` sat beside it. Phase 1 made both opt-in, which silently loses those columns. This task makes fitting part of the core and turns mask writing on by default, without making `torchimize` a hard requirement.
+
+**Files:**
+- Modify: `src/napari_spotiflow_tracking/batch/config.py` (`FitSettings.enabled` default, `OutputSettings.save_masks` default)
+- Modify: `src/napari_spotiflow_tracking/batch/detect.py` (`fit_spots` backend fallback)
+- Modify: `src/napari_spotiflow_tracking/batch/validation.py` (drop the torchimize requirement; keep the save_masks/fit dependency)
+- Modify: `src/napari_spotiflow_tracking/batch/presets/{tracking,papa,bleaching}.yaml` (only where a preset must differ)
+- Modify: `src/napari_spotiflow_tracking/_tests/test_batch_detect.py`, `test_batch_config.py`, `test_batch_validation.py`, `test_batch_runner.py` as needed
+- Modify: `README.md`, `examples/batch/*.yaml`, `docs/superpowers/specs/2026-09-17-unified-batch-pipeline-design.md`
+
+**Interfaces:**
+- Consumes: `_fitting.fit_all_frames_gpu`, `_fitting.make_gpu_spot_mask` (pure numpy — verified no torch on its path), `_fitting._fit_single_spot_scipy` for the fallback.
+- Produces: `detect.fit_spots(stack, spots, fit, device) -> (spots_with_columns, mask)` unchanged in signature, but now selecting a backend internally; `detect.fit_backend() -> "torchimize" | "scipy"`.
+
+Decisions (user, 2026-09-18): fitting is **on by default** in every preset, using torchimize when importable and the scipy per-frame fitter otherwise; `outputs.save_masks` **defaults to true** — the mask is written unless the user turns it off. Both fit paths must produce the identical column set, so the mask and its properties come from `make_gpu_spot_mask` either way.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `src/napari_spotiflow_tracking/_tests/test_batch_detect.py`:
+
+```python
+def test_fit_backend_prefers_torchimize_when_available(monkeypatch):
+    monkeypatch.setattr(detect, "torchimize_available", lambda: True)
+    assert detect.fit_backend() == "torchimize"
+    monkeypatch.setattr(detect, "torchimize_available", lambda: False)
+    assert detect.fit_backend() == "scipy"
+
+
+def test_scipy_fit_produces_the_same_columns_as_torchimize(monkeypatch):
+    """The fallback must not change spots.csv's schema."""
+    stack = _blob_stack(n_frames=2)
+    spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
+    fit = FitSettings(enabled=True)
+    gpu_spots, gpu_mask = detect.fit_spots(stack, spots, fit, "cpu")
+    monkeypatch.setattr(detect, "torchimize_available", lambda: False)
+    cpu_spots, cpu_mask = detect.fit_spots(stack, spots, fit, "cpu")
+    assert list(cpu_spots.columns) == list(gpu_spots.columns)
+    assert len(cpu_spots) == len(gpu_spots)
+    assert cpu_mask.shape == gpu_mask.shape and cpu_mask.dtype == gpu_mask.dtype
+    assert cpu_mask.any()
+
+
+def test_scipy_fit_recovers_blob_positions(monkeypatch):
+    monkeypatch.setattr(detect, "torchimize_available", lambda: False)
+    stack = _blob_stack(n_frames=2)
+    spots = detect.detect_stack(stack, DetectionSettings(method="log"), model=None)
+    fitted, _ = detect.fit_spots(stack, spots, FitSettings(enabled=True), "cpu")
+    ok = fitted[["x_fit", "y_fit"]].notna().all(axis=1)
+    assert ok.sum() >= len(fitted) - 1
+    assert (fitted.loc[ok, "sigma_x"] > 0).all()
+```
+
+In `src/napari_spotiflow_tracking/_tests/test_batch_config.py`:
+
+```python
+def test_fitting_and_masks_are_on_by_default():
+    cfg = load_config(data={})
+    assert cfg.detection.fit.enabled is True
+    assert cfg.outputs.save_masks is True
+
+
+@pytest.mark.parametrize("modality", ["tracking", "papa", "bleaching"])
+def test_every_preset_fits(modality):
+    cfg = load_config(data={"modality": modality})
+    assert cfg.detection.fit.enabled is True
+```
+
+In `src/napari_spotiflow_tracking/_tests/test_batch_validation.py`, replace `test_fit_needs_torchimize` with:
+
+```python
+def test_fit_does_not_require_torchimize(monkeypatch):
+    """The scipy fallback means a missing torchimize is not a config error."""
+    monkeypatch.setattr("napari_spotiflow_tracking.batch.validation.torchimize_available",
+                        lambda: False)
+    validate(_cfg(detection={"fit": {"enabled": True}}))
+
+
+def test_save_masks_still_needs_fitting():
+    with pytest.raises(ConfigError, match="outputs.save_masks needs detection.fit.enabled"):
+        validate(_cfg(detection={"fit": {"enabled": False}},
+                      outputs={"save_masks": True}))
+```
+
+In `src/napari_spotiflow_tracking/_tests/test_batch_runner.py`:
+
+```python
+def test_mask_and_fit_columns_are_written_by_default(tmp_path, recorder):
+    _movie(tmp_path / "g" / "m.tif")
+    cfg = _cfg(tmp_path, [str(tmp_path / "g")])
+    cfg.detection.fit.enabled = True
+    cfg.outputs.save_masks = True
+    assert runner.run(cfg).exit_code == 0
+    movie = tmp_path / "out" / "g" / "m"
+    spots = pd.read_csv(movie / "spots.csv")
+    assert {"amp", "x_fit", "y_fit", "sigma_x", "sigma_y", "bg",
+            "area", "mean_intensity", "max_intensity", "spot_radius"} <= set(spots.columns)
+    mask = tifffile.imread(str(movie / "mask.tif"))
+    assert mask.shape[0] == 6 and mask.any()
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/Scripts/python.exe -m pytest src/napari_spotiflow_tracking/_tests/test_batch_detect.py src/napari_spotiflow_tracking/_tests/test_batch_config.py src/napari_spotiflow_tracking/_tests/test_batch_validation.py src/napari_spotiflow_tracking/_tests/test_batch_runner.py -v`
+Expected: the new tests FAIL — `fit_backend` does not exist; defaults are still `False`; `test_fit_does_not_require_torchimize` raises `ConfigError`.
+
+- [ ] **Step 3: Add the scipy fallback to `detect.py`**
+
+```python
+def fit_backend() -> str:
+    """The fitting backend in use: batched torchimize when importable, else scipy."""
+    return "torchimize" if torchimize_available() else "scipy"
+
+
+def _fit_frames_scipy(stack, spots, fit):
+    """Per-frame scipy fit producing the columns fit_all_frames_gpu produces.
+
+    Slower than the batched path, but it needs no torch — so fitting can be on
+    by default on any install. Column names and order match exactly, because
+    make_gpu_spot_mask consumes them and spots.csv must have one schema.
+    """
+    from .._fitting import _fit_single_spot_scipy
+    ...
+```
+
+Fill in: iterate the spots frame by frame, fit each with `_fit_single_spot_scipy(stack[t], (y, x), patch_radius=fit.window * 2)`, and assemble `amp`, `x_fit`, `y_fit`, `sigma_x`, `sigma_y`, `bg` in the same order `fit_all_frames_gpu` assigns them (`x_fit`/`y_fit` are absolute coordinates — check how `fit_all_frames_gpu` converts its patch-local fit before copying). A failed fit gives `NaN` in those columns, as the GPU path does. Then `fit_spots` calls whichever backend and passes the result to `make_gpu_spot_mask` unchanged, so masks and region properties are identical in shape, dtype and column names.
+
+Log once per run which backend is in use (`log.info`), so a slow scipy run is explainable.
+
+- [ ] **Step 4: Flip the defaults**
+
+`config.py`: `FitSettings.enabled: bool = True`; `OutputSettings.save_masks: bool = True`. Update both docstrings/comments that describe them.
+
+`validation.py`: delete the `detection.fit.enabled needs the optional 'torchimize' package` error (the fallback removes the requirement); keep `outputs.save_masks needs detection.fit.enabled`.
+
+Presets: no preset needs `fit:` unless it differs from the default — check each, and leave `papa.yaml` alone unless a PAPA run should skip fitting (it should not: PAPA counts spots, and the mask columns are what the old `papa_analysis.py` produced).
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run the four test files above, then `.venv/Scripts/python.exe -m pytest src/napari_spotiflow_tracking/_tests -k batch -q`.
+Expected: all PASS. Phase-1 and phase-2 tests that assumed no fitting may now also write masks — if any fails, fix the cause, and only adjust a test when its assumption (not its subject) was wrong; say which in your report.
+
+- [ ] **Step 6: Time it on real data**
+
+The scipy path runs per spot; the batched path does not. Time both on one real movie so the cost is documented: run `spotiflow-batch run` on `D:/Data/Sudipta/Arpan/GoodDataset/field2.tif` (827 frames, ~18k spots) with fitting on, once normally and once with `torchimize_available` forced false (a small script calling `runner.run` with the patch is fine). Record both wall-clock times and the `mask.tif` size in your report. If the scipy path is more than ~10x slower, say so plainly — that is the number the user needs to decide whether it stays the default on machines without torchimize.
+
+- [ ] **Step 7: Update the docs**
+
+- `README.md`: the config block now shows `fit: {enabled: true, window: 2, max_radius: 2.0}` and `save_masks: true`; add one sentence to the outputs section saying `spots.csv` carries the fit and region-property columns and `mask.tif` is written unless `save_masks` is false.
+- `examples/batch/two_conditions.yaml` and `bleaching_single_movie.yaml`: reflect the new defaults, keeping the files honest.
+- Spec `docs/superpowers/specs/2026-09-17-unified-batch-pipeline-design.md`: in the config schema change the `fit:` line to `fit: {enabled: true, window: 2, max_radius: 2.0}   # torchimize when available, else scipy` and `save_masks: false` to `save_masks: true`; add to the Decisions table a row `Fitting/masks | On by default; torchimize when importable, else the per-frame scipy fitter; mask.tif written unless save_masks is false (user, 2026-09-18)`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/napari_spotiflow_tracking/batch/config.py src/napari_spotiflow_tracking/batch/detect.py src/napari_spotiflow_tracking/batch/validation.py src/napari_spotiflow_tracking/batch/presets src/napari_spotiflow_tracking/_tests/test_batch_detect.py src/napari_spotiflow_tracking/_tests/test_batch_config.py src/napari_spotiflow_tracking/_tests/test_batch_validation.py src/napari_spotiflow_tracking/_tests/test_batch_runner.py README.md examples/batch
+git add -f docs/superpowers/specs/2026-09-17-unified-batch-pipeline-design.md
+git commit -m "feat(batch): fit every spot and write masks by default, with a scipy fallback"
+```
