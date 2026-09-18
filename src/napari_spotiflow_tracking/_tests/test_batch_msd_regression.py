@@ -100,6 +100,75 @@ def test_class_counts_match_the_old_script():
     assert {"constrained", "diffusive", "directed"} <= represented
 
 
+def test_ensemble_msd_matches_the_old_script():
+    """The lag-averaged curve six group/comparison figures are drawn from."""
+    from napari_spotiflow_tracking.batch.analyses.msd import compute
+    from napari_spotiflow_tracking.batch.analyses.msd.units import Units
+    from napari_spotiflow_tracking.batch.config import Calibration
+
+    bulk = _load_script()
+    tracked = _tracks(seed=5)
+    curves, _ = compute.compute_msd_analysis(
+        tracked, Units(Calibration(pixel_size_nm=100, frame_interval_s=0.5),
+                       sigma_nm=35.0), max_lag=20, min_length=5)
+    new = compute.ensemble_msd(curves)
+    # The port adds a per-lag `sem` column the old curve had no equivalent of.
+    old = bulk.ensemble_msd(curves.drop(columns=["sem"]))
+    assert len(new) > 0
+    pd.testing.assert_frame_equal(old, new.drop(columns=["sem"]),
+                                  check_exact=False, rtol=1e-12)
+
+
+def test_directed_metrics_match_the_old_script():
+    """`_disp`/`_vel` feed six directed-motion outputs; they must not drift."""
+    from napari_spotiflow_tracking.batch.analyses.msd import compute
+    from napari_spotiflow_tracking.batch.analyses.msd.units import Units
+    from napari_spotiflow_tracking.batch.config import Calibration
+
+    bulk = _load_script()
+    tracked = _tracks(seed=6)
+    units = Units(Calibration(pixel_size_nm=100, frame_interval_s=0.5), sigma_nm=35.0)
+    _, fits = compute.compute_msd_analysis(tracked, units, max_lag=20, min_length=5)
+    table = compute.track_table(tracked, None, fits, units)
+    old_cal = bulk.Calibration(pixel_size_nm=100, frame_interval_s=0.5, sigma_nm=35.0)
+    old = bulk._directed_metrics(table, old_cal)
+    new = compute.directed_metrics(table, units)
+    assert len(new) > 0                       # the fixture really has directed tracks
+    pd.testing.assert_frame_equal(old.reset_index(drop=True), new.reset_index(drop=True),
+                                  check_exact=False, rtol=1e-12)
+
+
+def test_track_table_values_match_the_old_analyze_folder(tmp_path):
+    """The whole `track_props` block of analyze_folder, intensity columns included."""
+    import dataclasses
+
+    from napari_spotiflow_tracking.batch.analyses.msd import compute
+    from napari_spotiflow_tracking.batch.analyses.msd.units import Units
+    from napari_spotiflow_tracking.batch.config import Calibration
+
+    bulk = _load_script()
+    tracked = _tracks(seed=7)
+    rng = np.random.default_rng(1)
+    image = rng.integers(0, 4000, size=(int(tracked["frame"].max()) + 1, 64, 64),
+                         dtype=np.uint16)
+    args = dataclasses.replace(
+        bulk.parse_args([str(tmp_path / "in"), str(tmp_path / "out")]),
+        pixel_size_nm=100.0, frame_interval_s=0.5, sigma_nm=35.0,
+        msd_max_lag=20, min_track_length=5)
+    out_dir = tmp_path / "old"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bulk.analyze_folder(out_dir, tracked, image, args)
+    old = pd.read_csv(out_dir / "track_analysis.csv")
+
+    units = Units(Calibration(pixel_size_nm=100, frame_interval_s=0.5), sigma_nm=35.0)
+    _, fits = compute.compute_msd_analysis(tracked, units, max_lag=20, min_length=5)
+    new = compute.track_table(tracked, image, fits, units)
+
+    assert "mean_intensity" in new.columns and len(new) > 0
+    pd.testing.assert_frame_equal(old, new.reset_index(drop=True),
+                                  check_exact=False, rtol=1e-9)
+
+
 def test_track_table_matches_the_old_columns():
     """Every column analyze_folder writes to track_analysis.csv must exist."""
     from napari_spotiflow_tracking.batch.analyses.msd import compute
