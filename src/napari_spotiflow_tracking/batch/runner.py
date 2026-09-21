@@ -24,7 +24,7 @@ from .context import MovieContext
 from .detect import detect_stack, fit_spots, load_detector, track_spots
 from .inputs import MovieJob, color_pins, expand_inputs
 from .outputs import OutputSelector, save_figure, save_table
-from .overrides import config_for, validate_all
+from .overrides import ALLOWED_SECTIONS, config_for, validate_all
 from .preprocess import run_steps
 from .validation import validate
 
@@ -57,29 +57,40 @@ def _resolve_device(requested: str) -> str:
     return device
 
 
-def _build_context(job: MovieJob, cfg: PipelineConfig, out_dir: Path, device: str,
-                   detector: dict) -> MovieContext:
+def _detector_key(detection) -> tuple:
+    """What determines the loaded model: the method, and (for spotiflow) which
+    model. Movies in the same run can now override ``detection`` per file, so
+    the cache below must not hand a LoG movie's ``None`` sentinel -- or one
+    spotiflow movie's model -- to a movie that asked for something else."""
+    if detection.method != "spotiflow":
+        return (detection.method,)
+    return (detection.method, detection.spotiflow.model)
+
+
+def _build_context(job: MovieJob, movie_cfg: PipelineConfig, out_dir: Path, device: str,
+                   detectors: dict) -> MovieContext:
     raw = tifffile.imread(str(job.path))
     if raw.ndim != 3:
         raise ValueError(f"expected a (T, Y, X) movie, got shape {raw.shape}")
-    pre = run_steps(raw, cfg.preprocessing.steps, device)
-    if cfg.outputs.save_preprocessed:
+    pre = run_steps(raw, movie_cfg.preprocessing.steps, device)
+    if movie_cfg.outputs.save_preprocessed:
         tifffile.imwrite(str(out_dir / "preprocessed.tif"), pre, bigtiff=True)
 
     spots_csv, tracks_csv = out_dir / "spots.csv", out_dir / "tracks.csv"
-    reusable = spots_csv.exists() and (not cfg.tracking.enabled or tracks_csv.exists())
+    reusable = spots_csv.exists() and (not movie_cfg.tracking.enabled or tracks_csv.exists())
     mask = None
-    if cfg.skip_existing and reusable:
+    if movie_cfg.skip_existing and reusable:
         log.info("%s: reusing spots/tracks on disk", job.key)
         spots = pd.read_csv(spots_csv)
-        tracks = pd.read_csv(tracks_csv) if cfg.tracking.enabled else None
+        tracks = pd.read_csv(tracks_csv) if movie_cfg.tracking.enabled else None
     else:
-        if "model" not in detector:
-            detector["model"] = load_detector(cfg.detection, device)
-        spots = detect_stack(pre, cfg.detection, detector["model"])
-        if cfg.detection.fit.enabled:
-            spots, mask = fit_spots(pre, spots, cfg.detection.fit, device)
-            if cfg.outputs.save_masks:
+        key = _detector_key(movie_cfg.detection)
+        if key not in detectors:
+            detectors[key] = load_detector(movie_cfg.detection, device)
+        spots = detect_stack(pre, movie_cfg.detection, detectors[key])
+        if movie_cfg.detection.fit.enabled:
+            spots, mask = fit_spots(pre, spots, movie_cfg.detection.fit, device)
+            if movie_cfg.outputs.save_masks:
                 mask_path = out_dir / "mask.tif"
                 tifffile.imwrite(str(mask_path), mask, bigtiff=True)
                 # A labelled (T, Y, X) int32 stack is the same size as the movie
@@ -89,10 +100,10 @@ def _build_context(job: MovieJob, cfg: PipelineConfig, out_dir: Path, device: st
                          mask_path.stat().st_size / 1e6)
         save_table(spots, spots_csv)
         tracks = None
-        if cfg.tracking.enabled:
-            tracks = track_spots(spots, cfg.tracking)
+        if movie_cfg.tracking.enabled:
+            tracks = track_spots(spots, movie_cfg.tracking)
             save_table(tracks, tracks_csv)
-    return MovieContext(job=job, out_dir=out_dir, config=cfg, raw=raw, preprocessed=pre,
+    return MovieContext(job=job, out_dir=out_dir, config=movie_cfg, raw=raw, preprocessed=pre,
                         spots=spots, tracks=tracks, mask=mask)
 
 
@@ -103,11 +114,17 @@ def _write_status(status_path: Path, row: dict) -> None:
     os.replace(tmp, status_path)
 
 
-def _run_movie(job: MovieJob, cfg: PipelineConfig, movie_cfg: PipelineConfig, device: str,
-               detector: dict) -> dict:
-    out_dir = movie_dir(Path(cfg.output_dir), job)
+def _write_movie_resolved_config(movie_cfg: PipelineConfig, movie_analyses: list, device: str,
+                                 out_dir: Path) -> None:
+    write_resolved_config(_resolved(movie_cfg, movie_analyses, device),
+                          out_dir / "resolved_config.yaml")
+
+
+def _run_movie(job: MovieJob, run_cfg: PipelineConfig, movie_cfg: PipelineConfig, device: str,
+               detectors: dict) -> dict:
+    out_dir = movie_dir(Path(run_cfg.output_dir), job)
     status_path = out_dir / STATUS_FILE
-    if cfg.skip_existing and status_path.exists():
+    if run_cfg.skip_existing and status_path.exists():
         try:
             row = json.loads(status_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -116,6 +133,10 @@ def _run_movie(job: MovieJob, cfg: PipelineConfig, movie_cfg: PipelineConfig, de
         else:
             row["status"] = "SKIP"
             log.info("%s: already finished, skipped", job.key)
+            # A resumed movie still gets its own up-to-date resolved_config.yaml
+            # -- the provenance file should not go stale just because the
+            # movie itself was not reprocessed.
+            _write_movie_resolved_config(movie_cfg, enabled_analyses(movie_cfg), device, out_dir)
             return row
 
     start = time.perf_counter()
@@ -135,9 +156,8 @@ def _run_movie(job: MovieJob, cfg: PipelineConfig, movie_cfg: PipelineConfig, de
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         movie_analyses = enabled_analyses(movie_cfg)
-        write_resolved_config(_resolved(movie_cfg, movie_analyses, device),
-                              out_dir / "resolved_config.yaml")
-        ctx = _build_context(job, movie_cfg, out_dir, device, detector)
+        _write_movie_resolved_config(movie_cfg, movie_analyses, device, out_dir)
+        ctx = _build_context(job, movie_cfg, out_dir, device, detectors)
         row["n_frames"] = int(ctx.raw.shape[0])
         row["n_spots"] = int(len(ctx.spots))
         if ctx.tracks is not None:
@@ -230,20 +250,32 @@ def _resolved(cfg: PipelineConfig, analyses: list, device: str) -> PipelineConfi
     return dataclasses.replace(cfg, analyses=sections, device=device)
 
 
+def _section_value(cfg: PipelineConfig, name: str):
+    value = getattr(cfg, name)
+    return dataclasses.asdict(value) if dataclasses.is_dataclass(value) else value
+
+
 def _warn_heterogeneous_groups(jobs: list, movie_cfgs: dict) -> None:
     """One warning per group whose movies were not all given the same effective
-    preprocessing and detection settings -- summarize_group/compare_groups pool
-    them regardless, so a per-file override changes what the group figures mix."""
+    settings in any overridable section -- summarize_group/compare_groups pool
+    movies regardless, so a per-file override (even a quiet one like
+    calibration, which changes the axis scale rather than the pixel data)
+    changes what a group's numbers actually mix together. Checks every
+    section a movie/group is allowed to override (ALLOWED_SECTIONS), not
+    just preprocessing/detection, and names which ones differed."""
     groups: dict = {}
     for job in jobs:
         groups.setdefault(job.group, []).append(movie_cfgs[job.key])
     for group, cfgs in groups.items():
-        first_pre = dataclasses.asdict(cfgs[0].preprocessing)
-        first_det = dataclasses.asdict(cfgs[0].detection)
-        if any(dataclasses.asdict(c.preprocessing) != first_pre or
-               dataclasses.asdict(c.detection) != first_det for c in cfgs[1:]):
-            log.warning("group '%s': movies do not all share the same preprocessing/detection "
-                       "settings (group summaries and comparisons pool them regardless)", group)
+        first = {name: _section_value(cfgs[0], name) for name in ALLOWED_SECTIONS}
+        differing = sorted({
+            name for cfg in cfgs[1:] for name in ALLOWED_SECTIONS
+            if _section_value(cfg, name) != first[name]
+        })
+        if differing:
+            log.warning(
+                "group '%s': movies do not all share the same %s (group summaries "
+                "and comparisons pool them regardless)", group, ", ".join(differing))
 
 
 def run(cfg: PipelineConfig) -> RunResult:
@@ -264,8 +296,8 @@ def run(cfg: PipelineConfig) -> RunResult:
                  len({j.group for j in jobs}), ", ".join(a.name for a, _ in analyses) or "none")
         movie_cfgs = {job.key: config_for(job, cfg) for job in jobs}
         _warn_heterogeneous_groups(jobs, movie_cfgs)
-        detector: dict = {}
-        rows = [_run_movie(job, cfg, movie_cfgs[job.key], device, detector) for job in jobs]
+        detectors: dict = {}
+        rows = [_run_movie(job, cfg, movie_cfgs[job.key], device, detectors) for job in jobs]
         failed = _run_hooks(cfg, analyses, jobs, rows)
         _write_summary(cfg, rows)
         return RunResult(rows=rows, failed_hooks=failed)
