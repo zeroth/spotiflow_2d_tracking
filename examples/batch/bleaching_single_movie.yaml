@@ -11,8 +11,18 @@ modality: bleaching
 
 # A single movie works as an input; the group is named after the file unless
 # you give a label.
+#
+# With more movies in the group, `settings:` (group-wide) and `per_file:`
+# (per movie, keyed by file name, movie id or glob) override anything below
+# for those movies only -- see examples/batch/two_conditions.yaml for the
+# matching rules. Overridable: preprocessing, detection, tracking,
+# calibration, measure_on, analyses.
 inputs:
-  - {path: 'D:/Data/field2.tif', label: field2}
+  - path: 'D:/Data/field2.tif'
+    label: field2
+    # per_file:
+    #   field2.tif:
+    #     detection: {spotiflow: {prob_thresh: 0.6}}
 output_dir: 'D:/Results/field2_bleaching'
 
 device: cuda
