@@ -38,6 +38,12 @@ class InputSpec:
     pattern: str = "*.tif"
     recursive: bool = False
     color: Optional[str] = None
+    # Per-movie overrides (see batch/overrides.py): ``settings`` applies to every
+    # movie in this entry, ``per_file`` to movies matching its keys. Both are
+    # restricted to overrides.ALLOWED_SECTIONS; validated in validation.validate
+    # and batch/overrides.validate_all (which needs the expanded jobs).
+    settings: Dict[str, Any] = field(default_factory=dict)
+    per_file: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

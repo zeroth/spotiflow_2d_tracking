@@ -7,6 +7,7 @@ import warnings
 from .analyses import base
 from .config import FIGURE_FORMATS, MODALITIES, ConfigError, ConfigWarning, PipelineConfig
 from .outputs import OutputSelector
+from .overrides import validate_override_sections
 from .preprocess import validate_steps
 
 
@@ -19,6 +20,16 @@ def validate(cfg: PipelineConfig) -> None:
     for index, spec in enumerate(cfg.inputs):
         if not spec.path:
             errors.append(f"inputs[{index}].path is required")
+        if spec.settings:
+            errors.extend(validate_override_sections(spec.settings, f"inputs[{index}].settings"))
+        per_file = spec.per_file
+        if per_file and not isinstance(per_file, dict):
+            errors.append(f"inputs[{index}].per_file must be a mapping, "
+                          f"got {type(per_file).__name__}")
+        else:
+            for key, section in (per_file or {}).items():
+                errors.extend(
+                    validate_override_sections(section, f"inputs[{index}].per_file.{key}"))
     if not cfg.output_dir:
         errors.append("output_dir is required")
     if cfg.device not in ("cuda", "cpu"):
