@@ -276,6 +276,18 @@ def _build(cls, data: Any, where: str):
     return cls(**kwargs)
 
 
+def build_config(data: dict) -> PipelineConfig:
+    """Build a :class:`PipelineConfig` from an already-merged raw dict.
+
+    The public counterpart of ``_build(PipelineConfig, data, "")`` for callers
+    outside this module (e.g. ``batch.overrides.config_for``, which re-merges
+    an already-resolved config with a movie's override) that want the same
+    type-checking and unknown-key warnings ``load_config`` gets, without
+    reaching for a private helper.
+    """
+    return _build(PipelineConfig, data, "")
+
+
 def load_config(
     path: Optional[Path] = None,
     overrides: Sequence[str] = (),
@@ -299,7 +311,7 @@ def load_config(
     modality = user.get("modality", "tracking")
     merged = deep_merge(load_preset(modality), user)
     merged["modality"] = modality
-    return _build(PipelineConfig, merged, "")
+    return build_config(merged)
 
 
 def config_to_dict(cfg: PipelineConfig) -> dict:

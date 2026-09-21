@@ -2,7 +2,9 @@
 
 ``InputSpec.settings`` applies to every movie an input entry expands to;
 ``InputSpec.per_file`` applies exceptions to individual movies within it,
-keyed by file name, movie id, or a glob against either. Both are restricted
+keyed by file name, movie id, or a glob against either -- matched with
+``fnmatch.fnmatchcase`` so behaviour does not change with the OS (plain
+``fnmatch.fnmatch`` normalizes case on Windows only). Both are restricted
 to the sections a movie may reasonably own -- not the run-wide concerns
 (``device``, ``outputs``, ``output_dir``, ``skip_existing``, ``inputs``
 itself).
@@ -33,9 +35,9 @@ Two entry points, deliberately split by what they need to know:
 from __future__ import annotations
 
 import fnmatch
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from .config import ConfigError, InputSpec, PipelineConfig, _build, config_to_dict, deep_merge
+from .config import ConfigError, InputSpec, PipelineConfig, build_config, config_to_dict, deep_merge
 from .inputs import MovieJob, input_label
 
 #: The only sections a movie/group may set for itself; everything else
@@ -59,39 +61,56 @@ def validate_override_sections(section: Any, where: str) -> List[str]:
 
 
 def _match_kind(key: str, job: MovieJob) -> Optional[str]:
-    """``"exact"``, ``"glob"`` or ``None`` for how (or whether) ``key`` names ``job``."""
+    """``"exact"``, ``"glob"`` or ``None`` for how (or whether) ``key`` names ``job``.
+
+    Uses ``fnmatchcase``, not ``fnmatch``: plain ``fnmatch`` normalizes case
+    on Windows (via ``os.path.normcase``) but not on Linux, so the same
+    config would classify a key like ``Cell03.tif`` differently -- an exact
+    match on Windows, a glob on Linux -- and error out differently too.
+    """
     filename = job.path.name
     if key == filename or key == job.movie_id:
         return "exact"
-    if fnmatch.fnmatch(filename, key) or fnmatch.fnmatch(job.movie_id, key):
+    if fnmatch.fnmatchcase(filename, key) or fnmatch.fnmatchcase(job.movie_id, key):
         return "glob"
     return None
 
 
-def _override_for_job(spec: InputSpec, job: MovieJob) -> dict:
-    """The merged ``settings`` + matching ``per_file`` override for one movie.
+def _job_matches(spec: InputSpec, job: MovieJob) -> Tuple[List[str], List[str]]:
+    """``(chosen, ambiguous)`` per_file keys for one job.
 
-    Only needs ``job`` itself (not its siblings): whether two ``per_file``
-    keys are ambiguous for a movie depends only on that movie's matches.
-    Whether a key matches *no* movie needs the whole entry -- see
-    :func:`matches_for`.
+    ``chosen`` is what should be applied (possibly empty, if nothing
+    matches); ``ambiguous`` lists 2+ conflicting glob keys when there is no
+    exact match to resolve them (``chosen`` is then empty too). Only needs
+    ``job`` itself, not its siblings -- see the module docstring.
     """
-    merged = dict(spec.settings or {})
     per_file = spec.per_file or {}
     exact = [key for key in per_file if _match_kind(key, job) == "exact"]
-    globs = [key for key in per_file if _match_kind(key, job) == "glob"]
     if exact:
-        chosen = exact
-    elif len(globs) > 1:
-        raise ConfigError(
-            f"movie '{job.movie_id}' in input '{job.group}' matches multiple per_file "
-            f"patterns: {', '.join(sorted(globs))}"
-        )
-    else:
-        chosen = globs
+        return exact, []
+    globs = [key for key in per_file if _match_kind(key, job) == "glob"]
+    if len(globs) > 1:
+        return [], globs
+    return globs, []
+
+
+def _merge_override(spec: InputSpec, chosen: List[str]) -> dict:
+    merged = dict(spec.settings or {})
+    per_file = spec.per_file or {}
     for key in chosen:
         merged = deep_merge(merged, per_file[key])
     return merged
+
+
+def _override_for_job(spec: InputSpec, job: MovieJob) -> dict:
+    """The merged ``settings`` + matching ``per_file`` override for one movie."""
+    chosen, ambiguous = _job_matches(spec, job)
+    if ambiguous:
+        raise ConfigError(
+            f"movie '{job.movie_id}' in input '{job.group}' matches multiple per_file "
+            f"patterns: {', '.join(sorted(ambiguous))}"
+        )
+    return _merge_override(spec, chosen)
 
 
 def matches_for(spec: InputSpec, jobs: List[MovieJob]) -> Dict[str, dict]:
@@ -99,22 +118,33 @@ def matches_for(spec: InputSpec, jobs: List[MovieJob]) -> Dict[str, dict]:
 
     Applies the matching rules (exact file name or movie id beats a glob;
     two globs matching one movie is ambiguous) and raises :class:`ConfigError`
-    when a ``per_file`` key matches no movie in this entry.
+    when a ``per_file`` key matches no movie in this entry. Every problem in
+    the entry -- ambiguous movies and unmatched keys alike -- is collected
+    into one error before raising, rather than stopping at the first one.
     """
     label = input_label(spec)
     entry_jobs = [job for job in jobs if job.group == label]
+    per_file = spec.per_file or {}
+    problems = []
     result = {}
     matched_keys = set()
     for job in entry_jobs:
-        result[job.movie_id] = _override_for_job(spec, job)
-        for key in (spec.per_file or {}):
+        chosen, ambiguous = _job_matches(spec, job)
+        if ambiguous:
+            problems.append(
+                f"movie '{job.movie_id}' matches multiple per_file patterns: "
+                f"{', '.join(sorted(ambiguous))}"
+            )
+        else:
+            result[job.movie_id] = _merge_override(spec, chosen)
+        for key in per_file:
             if _match_kind(key, job) is not None:
                 matched_keys.add(key)
-    unmatched = [key for key in (spec.per_file or {}) if key not in matched_keys]
+    unmatched = [key for key in per_file if key not in matched_keys]
     if unmatched:
-        raise ConfigError(
-            f"input '{label}': per_file key(s) match no movie: {', '.join(unmatched)}"
-        )
+        problems.append(f"per_file key(s) match no movie: {', '.join(unmatched)}")
+    if problems:
+        raise ConfigError(f"input '{label}': " + "; ".join(problems))
     return result
 
 
@@ -149,4 +179,4 @@ def config_for(job: MovieJob, cfg: PipelineConfig) -> PipelineConfig:
     if not override:
         return cfg
     merged = deep_merge(config_to_dict(cfg), override)
-    return _build(PipelineConfig, merged, "")
+    return build_config(merged)
