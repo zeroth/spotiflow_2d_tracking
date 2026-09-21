@@ -59,6 +59,7 @@ One batch pipeline, inside the package, driven by a YAML config:
 | Fitting/masks | On by default; torchimize when importable, else the per-frame scipy fitter; mask.tif written unless save_masks is false. Exception: the `papa` preset sets both off — it only counts spots (user, 2026-09-18) |
 | Minimum track length | Per analysis (e.g. msd.min_length), never at tracking time — tracks.csv keeps every linked track (user, 2026-09-18) |
 | Output selection granularity | `figures`/`tables` are one list per analysis, applied at every level at once: naming `motility_comparison` also silences the per-movie and per-group figures. Per-level selection (`figures: {movie: [...], comparison: [...]}`) is to be settled before phase 3 (review, 2026-09-18) |
+| Per-group / per-file overrides | Each `inputs[]` entry may carry `settings` (applies to every movie in the entry) and `per_file` (keyed by file name, movie id, or a glob, matched in that order of specificity — exact beats glob; an ambiguous glob or a key matching no movie is a config error). Both are restricted to `preprocessing`, `detection`, `tracking`, `calibration`, `measure_on`, `analyses` — not the run-wide keys (`device`, `outputs`, `output_dir`, `skip_existing`, `inputs`), so a run stays reasoned-about as one thing. Resolution order: dataclass defaults < modality preset < global YAML < `--set` < group `settings` < matching `per_file`, all deep-merged. Each movie gets its own `resolved_config.yaml`; a group whose movies end up with different effective `preprocessing`/`detection` logs one `run.log` warning, since its group summary pools them regardless (user, 2026-09-21) |
 
 ## Architecture
 
@@ -158,6 +159,13 @@ modality: tracking            # tracking | papa | bleaching
 inputs:
   - {path: D:/Data/control, label: Control, pattern: "*.tif", recursive: false, color: null}
   - {path: D:/Data/one_movie.tif}          # label defaults to the file/folder name
+  - path: D:/Data/drug
+    label: Drug
+    settings:                              # group layer: every movie in this entry
+      detection: {spotiflow: {prob_thresh: 0.45}}
+    per_file:                              # file layer: exceptions, matched by
+      cell03.tif: {detection: {spotiflow: {prob_thresh: 0.6}}}   # file name, movie id,
+      "low_snr_*": {preprocessing: {steps: [{gaussian_blur: {sigma: 1.5}}]}}   # or glob
 output_dir: D:/Results/run1
 skip_existing: false
 device: cuda                  # cuda | cpu; cuda unavailable → cpu with a warning

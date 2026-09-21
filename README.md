@@ -202,6 +202,56 @@ every analysis at once (the `bleaching` preset does exactly that, since its
 uint16 mean subtraction clips the background to zero), or set
 `analyses.<name>.measure_on` to change just one analysis.
 
+### Per-group and per-file overrides
+
+A single input entry can carry its own settings, and individual movies within
+it can carry exceptions on top of those:
+
+```yaml
+detection: {spotiflow: {prob_thresh: 0.5}}      # global layer
+
+inputs:
+  - path: D:/Data/control
+    label: Control
+    settings:                                    # group layer: every movie in this entry
+      detection: {spotiflow: {prob_thresh: 0.45}}
+    per_file:                                    # file layer: exceptions
+      cell03.tif: {detection: {spotiflow: {prob_thresh: 0.6}}}
+      "low_snr_*": {preprocessing: {steps: [{gaussian_blur: {sigma: 1.5}}]}}
+```
+
+`settings` and `per_file` values are restricted to the same six sections a
+movie can reasonably own: `preprocessing`, `detection`, `tracking`,
+`calibration`, `measure_on`, `analyses`. Anything else (`device`, `outputs`,
+`output_dir`, `skip_existing`, `inputs` itself) is a config error naming the
+offending key — those describe the run, not a movie, and letting one movie
+pick its own dpi or device would make a run impossible to reason about.
+
+Per movie, later wins, deep-merged so naming one leaf key (e.g.
+`detection.spotiflow.prob_thresh`) leaves the rest of that section untouched:
+
+    dataclass defaults < modality preset < global YAML < --set
+        < group `settings` < matching `per_file`
+
+`--set` still edits the global layer: `--set detection.spotiflow.prob_thresh=0.4`
+sweeps every movie except the ones a config has pinned with `settings` or
+`per_file`.
+
+A `per_file` key matches a movie when it equals, in order of specificity: the
+file name (`cell03.tif`), the movie id (`cell03`, or `day1__cell03` for a
+recursive input — the same id `expand_inputs` uses as the output folder
+name), or a glob (`fnmatch`) against either. An exact match always beats a
+glob; two globs matching the same movie, or a `per_file` key matching no
+movie in its entry, are both config errors — a typo'd file name silently
+doing nothing is the worst failure mode here, so the run fails before the
+first movie loads rather than quietly ignoring it.
+
+Each movie's own `resolved_config.yaml` (in its output folder, beside the
+run-level one) shows the config it actually ran with. If a group's movies end
+up with different effective `preprocessing`/`detection` settings, `run.log`
+gets one warning per such group, since its group summary and any comparison
+figures pool them regardless.
+
 ### Modalities
 
 `modality` picks a preset of defaults, which your config then overrides:
