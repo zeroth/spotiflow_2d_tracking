@@ -24,6 +24,7 @@ from .context import MovieContext
 from .detect import detect_stack, fit_spots, load_detector, track_spots
 from .inputs import MovieJob, color_pins, expand_inputs
 from .outputs import OutputSelector, save_figure, save_table
+from .overrides import config_for, validate_all
 from .preprocess import run_steps
 from .validation import validate
 
@@ -102,7 +103,7 @@ def _write_status(status_path: Path, row: dict) -> None:
     os.replace(tmp, status_path)
 
 
-def _run_movie(job: MovieJob, cfg: PipelineConfig, analyses: list, device: str,
+def _run_movie(job: MovieJob, cfg: PipelineConfig, movie_cfg: PipelineConfig, device: str,
                detector: dict) -> dict:
     out_dir = movie_dir(Path(cfg.output_dir), job)
     status_path = out_dir / STATUS_FILE
@@ -133,12 +134,15 @@ def _run_movie(job: MovieJob, cfg: PipelineConfig, analyses: list, device: str,
         return row
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        ctx = _build_context(job, cfg, out_dir, device, detector)
+        movie_analyses = enabled_analyses(movie_cfg)
+        write_resolved_config(_resolved(movie_cfg, movie_analyses, device),
+                              out_dir / "resolved_config.yaml")
+        ctx = _build_context(job, movie_cfg, out_dir, device, detector)
         row["n_frames"] = int(ctx.raw.shape[0])
         row["n_spots"] = int(len(ctx.spots))
         if ctx.tracks is not None:
             row["n_tracks"] = int(ctx.tracks["particle"].nunique())
-        for analysis, settings in analyses:
+        for analysis, settings in movie_analyses:
             select = OutputSelector(settings, analysis.catalogue, analysis.name)
             record = analysis.run_movie(ctx, settings, select) or {}
             for key, value in record.items():
@@ -226,9 +230,26 @@ def _resolved(cfg: PipelineConfig, analyses: list, device: str) -> PipelineConfi
     return dataclasses.replace(cfg, analyses=sections, device=device)
 
 
+def _warn_heterogeneous_groups(jobs: list, movie_cfgs: dict) -> None:
+    """One warning per group whose movies were not all given the same effective
+    preprocessing and detection settings -- summarize_group/compare_groups pool
+    them regardless, so a per-file override changes what the group figures mix."""
+    groups: dict = {}
+    for job in jobs:
+        groups.setdefault(job.group, []).append(movie_cfgs[job.key])
+    for group, cfgs in groups.items():
+        first_pre = dataclasses.asdict(cfgs[0].preprocessing)
+        first_det = dataclasses.asdict(cfgs[0].detection)
+        if any(dataclasses.asdict(c.preprocessing) != first_pre or
+               dataclasses.asdict(c.detection) != first_det for c in cfgs[1:]):
+            log.warning("group '%s': movies do not all share the same preprocessing/detection "
+                       "settings (group summaries and comparisons pool them regardless)", group)
+
+
 def run(cfg: PipelineConfig) -> RunResult:
     validate(cfg)
     jobs = expand_inputs(cfg)
+    validate_all(cfg, jobs)
     out = Path(cfg.output_dir)
     out.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(out / "run.log", encoding="utf-8")
@@ -241,8 +262,10 @@ def run(cfg: PipelineConfig) -> RunResult:
         write_resolved_config(_resolved(cfg, analyses, device), out / "resolved_config.yaml")
         log.info("%d movies in %d groups; analyses: %s", len(jobs),
                  len({j.group for j in jobs}), ", ".join(a.name for a, _ in analyses) or "none")
+        movie_cfgs = {job.key: config_for(job, cfg) for job in jobs}
+        _warn_heterogeneous_groups(jobs, movie_cfgs)
         detector: dict = {}
-        rows = [_run_movie(job, cfg, analyses, device, detector) for job in jobs]
+        rows = [_run_movie(job, cfg, movie_cfgs[job.key], device, detector) for job in jobs]
         failed = _run_hooks(cfg, analyses, jobs, rows)
         _write_summary(cfg, rows)
         return RunResult(rows=rows, failed_hooks=failed)
