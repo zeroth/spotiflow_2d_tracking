@@ -135,8 +135,19 @@ def _run_movie(job: MovieJob, run_cfg: PipelineConfig, movie_cfg: PipelineConfig
             log.info("%s: already finished, skipped", job.key)
             # A resumed movie still gets its own up-to-date resolved_config.yaml
             # -- the provenance file should not go stale just because the
-            # movie itself was not reprocessed.
-            _write_movie_resolved_config(movie_cfg, enabled_analyses(movie_cfg), device, out_dir)
+            # movie itself was not reprocessed. But the movie's outputs are
+            # already complete and valid, so a failure refreshing only this
+            # file (a read-only archived folder, a full disk, a locked file
+            # on a synced/network output path) must not turn a finished movie
+            # into a FAIL, and must not abort movies not yet processed --
+            # unlike the processing path, nothing here is inside _run_movie's
+            # other try/except, so this one has to catch for itself.
+            try:
+                _write_movie_resolved_config(movie_cfg, enabled_analyses(movie_cfg), device,
+                                             out_dir)
+            except Exception as exc:
+                log.warning("%s: could not refresh %s (%s: %s)", job.key,
+                           "resolved_config.yaml", type(exc).__name__, exc)
             return row
 
     start = time.perf_counter()

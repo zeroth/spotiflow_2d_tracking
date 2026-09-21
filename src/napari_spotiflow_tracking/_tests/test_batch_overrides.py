@@ -545,6 +545,45 @@ def test_detector_cache_reloads_for_each_distinct_spotiflow_model(tmp_path, monk
     assert resolved_b["detection"]["spotiflow"]["model"] == "hybiss"
 
 
+# ── Skip-path provenance write must not abort the run ──────────────────────
+
+def test_skip_path_provenance_write_failure_does_not_abort_the_run(tmp_path, monkeypatch, caplog):
+    """Finding 6's fix (write resolved_config.yaml on the skip_existing path
+    too) introduced its own failure mode: that write is not inside
+    _run_movie's try/except the way the processing-path write is, and the
+    movie loop in run() has no per-item guard either -- so an unhandled
+    failure there (a read-only archived folder, a full disk, a locked file
+    on a synced output path) would escape _run_movie and abort the whole
+    batch, including movies not yet processed. The already-finished movie's
+    outputs are complete and valid regardless -- only the provenance refresh
+    failed -- so the right behaviour is a warning and a SKIP row, not a FAIL
+    and not an aborted run."""
+    _spot_movie(tmp_path / "g" / "m.tif", amps=(3000, 1500))
+    cfg = _no_analysis_cfg([str(tmp_path / "g")], tmp_path / "out", skip_existing=True)
+    runner.run(cfg)  # first run: processes m and writes its status file
+
+    _spot_movie(tmp_path / "g" / "n.tif", amps=(3000, 1500))  # a fresh, unprocessed movie
+
+    real_write = runner._write_movie_resolved_config
+
+    def flaky_write(movie_cfg, movie_analyses, device, out_dir):
+        if out_dir.name == "m":
+            raise OSError("provenance write failed (e.g. a read-only archived folder)")
+        return real_write(movie_cfg, movie_analyses, device, out_dir)
+
+    monkeypatch.setattr(runner, "_write_movie_resolved_config", flaky_write)
+
+    with caplog.at_level(logging.WARNING, logger="napari_spotiflow_tracking.batch"):
+        result = runner.run(cfg)
+
+    assert result.exit_code == 0
+    rows = {r["movie"]: r for r in result.rows}
+    assert rows["m"]["status"] == "SKIP"
+    assert rows["n"]["status"] == "OK"  # the other movie in the run still processed
+    warnings_ = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("g/m" in msg and "OSError" in msg for msg in warnings_)
+
+
 # ── validate_all / fail-before-first-movie ─────────────────────────────────
 
 def test_validate_all_raises_for_unmatched_per_file_key(tmp_path):
