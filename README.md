@@ -208,6 +208,8 @@ A single input entry can carry its own settings, and individual movies within
 it can carry exceptions on top of those:
 
 ```yaml
+preprocessing:
+  steps: [{walking_average: {window: 4}}, {subtract: {value: mean}}]   # global layer
 detection: {spotiflow: {prob_thresh: 0.5}}      # global layer
 
 inputs:
@@ -217,7 +219,10 @@ inputs:
       detection: {spotiflow: {prob_thresh: 0.45}}
     per_file:                                    # file layer: exceptions
       cell03.tif: {detection: {spotiflow: {prob_thresh: 0.6}}}
-      "low_snr_*": {preprocessing: {steps: [{gaussian_blur: {sigma: 1.5}}]}}
+      "low_snr_*":                                # a list replaces, not merges (see below),
+        preprocessing:                            # so this repeats the global steps and
+          steps: [{walking_average: {window: 4}}, {subtract: {value: mean}},
+                  {gaussian_blur: {sigma: 1.5}}]   # adds the extra blur
 ```
 
 `settings` and `per_file` values are restricted to the same six sections a
@@ -232,6 +237,11 @@ Per movie, later wins, deep-merged so naming one leaf key (e.g.
 
     dataclass defaults < modality preset < global YAML < --set
         < group `settings` < matching `per_file`
+
+Merging is deep for mappings but a list is replaced whole, same as `deep_merge`
+everywhere else in this config — so a `preprocessing.steps` override is not
+"one more step tacked on", it is that movie's *entire* pipeline, as the
+`low_snr_*` example above repeats.
 
 `--set` still edits the global layer: `--set detection.spotiflow.prob_thresh=0.4`
 sweeps every movie except the ones a config has pinned with `settings` or
