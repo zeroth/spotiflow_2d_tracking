@@ -14,6 +14,7 @@ import yaml
 from .analyses import base
 from .config import MODALITIES, ConfigError, config_to_dict, load_config
 from .inputs import expand_inputs
+from .overrides import validate_all
 from .runner import run
 from .validation import validate
 
@@ -115,6 +116,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.command == "validate":
             validate(cfg)
             jobs = expand_inputs(cfg)
+            validate_all(cfg, jobs)
             groups = {job.group for job in jobs}
             print(f"config OK: {len(jobs)} movie(s) in {len(groups)} group(s)")
             return 0
