@@ -13,6 +13,11 @@ separators. Derived from the input stem, the graphs are:
     _ratio_g2_g1.png               per-cycle G2/G1 ratio bars
     _info.txt                      how this run was configured
 
+The four ``_combine_*`` figures plot against the frame number unless
+``--frame_interval_ms`` gives the acquisition interval, in which case their x
+axis is elapsed time (frame 1 at t = 0). The per-cycle figures are indexed by
+cycle and are unaffected.
+
 Figure titles name only what the figure shows. The acquisition pattern, the
 ratio window, the normalisation range and the per-cycle frame ranges all go in
 ``_info.txt``, so a figure can be traced back without being cluttered.
@@ -66,12 +71,13 @@ FIG_W_PANEL = 4.5
 # figure. Everything else here is single-panel.
 FIG_W_TRACE = FIG_W + 2 * FIG_W_PANEL
 # Type is sized for a figure printed at column width, so values stay legible
-# after downscaling.
-FONT_TICK = 15
-FONT_LABEL = 17
-FONT_TITLE = 13
-FONT_ANNOT = 12          # in-plot annotations and legends
-FONT_ANNOT_SMALL = 10    # the same, where a panel is too tight for FONT_ANNOT
+# after downscaling. Kept in step with bulk_track_analysis.py's sizes, so the
+# two scripts' PNGs still read as one set on the page.
+FONT_TICK = 17
+FONT_LABEL = 19
+FONT_TITLE = 15
+FONT_ANNOT = 14          # in-plot annotations and legends
+FONT_ANNOT_SMALL = 12    # the same, where a panel is too tight for FONT_ANNOT
 plt.rcParams.update({
     "font.size": FONT_TICK,
     "axes.labelsize": FONT_LABEL,
@@ -101,6 +107,10 @@ def parse_args():
                         "ratio, taken from the start of the block. Affects the "
                         "ratio only; the trace and the total counts always use "
                         "every frame (default: 1.0, the whole block).")
+    p.add_argument("--frame_interval_ms", type=float, default=None,
+                   help="Acquisition interval between frames in milliseconds. "
+                        "When given, the combined graphs' x axis is elapsed "
+                        "time instead of the frame number (default: frames).")
     p.add_argument("--spotiflow_model", type=str, default="general",
                    help="Spotiflow pretrained model name (default: general).")
     p.add_argument("--prob_thresh", type=float, default=None,
@@ -130,6 +140,8 @@ def parse_args():
     # every ratio NaN, which reads as a bug rather than as a setting.
     if not 0 < args.ratio_frame_fraction <= 1:
         p.error("ratio_frame_fraction must be > 0 and <= 1")
+    if args.frame_interval_ms is not None and args.frame_interval_ms <= 0:
+        p.error("frame_interval_ms must be > 0")
 
     return args
 
@@ -138,6 +150,26 @@ def parse_args():
 # normalisation range are recorded once in the run's info file instead of being
 # repeated across every figure.
 NORM_YLABEL = "Particles (normalised 0-1)"
+
+
+def _time_axis(frame_interval_ms, max_time):
+    """Return ``(convert, label)`` for the combined graphs' x axis.
+
+    Without an interval the axis stays in frame numbers and ``convert`` is the
+    identity. With one, frame *f* maps to ``(f - 1) * dt`` so the first frame
+    sits at t = 0, and the unit follows the run's length: seconds up to ten
+    minutes, minutes beyond that, since a few thousand frames otherwise put
+    five-digit tick labels under the axis.
+
+    ``convert`` takes fractional frames too — the shaded bands run from
+    ``start - 0.5`` to ``end + 0.5`` — and works elementwise on a Series.
+    """
+    if frame_interval_ms is None:
+        return (lambda f: f), "Time (frame)"
+    dt_s = frame_interval_ms / 1000.0
+    if (max_time - 1) * dt_s > 600:
+        return (lambda f: (f - 1) * dt_s / 60.0), "Time (min)"
+    return (lambda f: (f - 1) * dt_s), "Time (s)"
 
 
 def _normalize_for_plot(particles_per_frame, cycle_info):
@@ -183,6 +215,12 @@ def write_info_file(save_path, args, max_time, cycle_info,
         "",
         f"Input                 : {args.input_tiff}",
         f"Frames                : {max_time}",
+        "Frame interval        : "
+        + (f"{args.frame_interval_ms:g} ms"
+           if args.frame_interval_ms is not None else "not given"),
+        f"Combined-graph x axis : {_time_axis(args.frame_interval_ms, max_time)[1]}"
+        + ("" if args.frame_interval_ms is None
+           else "  (frame 1 at t = 0)"),
         "",
         "Detection",
         f"  Spotiflow model     : {args.spotiflow_model}",
@@ -252,24 +290,35 @@ def write_info_file(save_path, args, max_time, cycle_info,
 
 
 def _draw_trace_and_bands(ax, particles_per_frame, cycle_info, max_time,
-                          group1_size, label_group1, label_group2):
+                          group1_size, label_group1, label_group2,
+                          convert=None):
     """Draw the particle trace over the shaded lead-in / group / cycle bands.
 
     Shared by the plain combined graph and the ratio-overlay variant, so the
     two always shade the acquisition identically. Sets only the x limits — the
     caller owns the title, labels, legend and y axis.
+
+    ``convert`` maps a frame number onto the x axis (see :func:`_time_axis`);
+    every x coordinate here goes through it, so the trace, the bands and the
+    separators stay aligned whichever unit the axis is in.
     """
+    if convert is None:
+        def convert(f):
+            return f
+
     group_colors = ["tab:blue", "tab:orange"]
     group_labels = [label_group1, label_group2]
 
-    ax.plot(particles_per_frame["frame"], particles_per_frame["n_particles"],
+    ax.plot(convert(particles_per_frame["frame"]),
+            particles_per_frame["n_particles"],
             color="black", linewidth=1.0, zorder=2)
 
     # Excluded lead-in: readout before the first pulse, in no cycle. Shaded so
     # it is visibly present but visibly not part of the analysis.
     lead_in = lead_in_span(max_time, group1_size)
     if lead_in is not None:
-        ax.axvspan(lead_in[0] - 0.5, lead_in[1] + 0.5, color="gray",
+        ax.axvspan(convert(lead_in[0] - 0.5), convert(lead_in[1] + 0.5),
+                   color="gray",
                    alpha=0.18, linewidth=0, label="lead-in (excluded)",
                    zorder=0)
 
@@ -279,7 +328,8 @@ def _draw_trace_and_bands(ax, particles_per_frame, cycle_info, max_time,
         group = info["group"]
         label = None if group in labeled else group_labels[(group - 1) % 2]
         labeled.add(group)
-        ax.axvspan(info["start_frame"] - 0.5, info["end_frame"] + 0.5,
+        ax.axvspan(convert(info["start_frame"] - 0.5),
+                   convert(info["end_frame"] + 0.5),
                    color=group_colors[(group - 1) % 2], alpha=0.12,
                    linewidth=0, label=label, zorder=0)
 
@@ -291,10 +341,10 @@ def _draw_trace_and_bands(ax, particles_per_frame, cycle_info, max_time,
             for o in cycle_info
         )
         if is_cycle_end and info["cycle"] < last_cycle:
-            ax.axvline(x=info["end_frame"] + 0.5, color="gray",
+            ax.axvline(x=convert(info["end_frame"] + 0.5), color="gray",
                        linestyle=":", alpha=0.8, linewidth=1.0, zorder=1)
 
-    ax.set_xlim(0.5, max_time + 0.5)
+    ax.set_xlim(convert(0.5), convert(max_time + 0.5))
 
 
 def _cycle_spans(cycle_info):
@@ -310,7 +360,7 @@ def _cycle_spans(cycle_info):
 def make_combined_graph(particles_per_frame, cycle_info, max_time,
                         group1_size, group2_size, skip_frames,
                         label_group1, label_group2, save_path,
-                        normalize=False):
+                        normalize=False, frame_interval_ms=None):
     """Create and save the combined particles-per-frame graph.
 
     The excluded lead-in block is shaded grey; each cycle's group ranges are
@@ -325,12 +375,13 @@ def make_combined_graph(particles_per_frame, cycle_info, max_time,
             print("Flat or empty trace; skipping normalised combined graph.")
             return
 
+    convert, xlabel = _time_axis(frame_interval_ms, max_time)
     fig, ax = plt.subplots(figsize=(FIG_W_TRACE, FIG_H))
     _draw_trace_and_bands(ax, trace, cycle_info, max_time,
-                          group1_size, label_group1, label_group2)
+                          group1_size, label_group1, label_group2, convert)
 
     ax.set_title("Particles per frame")
-    ax.set_xlabel("Time (frame)")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel(NORM_YLABEL if normalize else "Number of Particles")
     if ax.get_legend_handles_labels()[0]:
         ax.legend(loc="upper right", fontsize=FONT_ANNOT_SMALL)
@@ -344,7 +395,8 @@ def make_combined_graph(particles_per_frame, cycle_info, max_time,
 def make_combined_ratio_graph(particles_per_frame, cycle_info, max_time,
                               group1_size, group2_size, skip_frames,
                               label_group1, label_group2, save_path,
-                              ratio_frame_fraction=1.0, normalize=False):
+                              ratio_frame_fraction=1.0, normalize=False,
+                              frame_interval_ms=None):
     """The combined graph with the per-cycle G2/G1 ratio line drawn over it.
 
     Same trace and shading as :func:`make_combined_graph`, plus the ratio from
@@ -372,21 +424,23 @@ def make_combined_ratio_graph(particles_per_frame, cycle_info, max_time,
                   "skipping normalised combined ratio graph.")
             return
 
+    convert, xlabel = _time_axis(frame_interval_ms, max_time)
     fig, ax = plt.subplots(figsize=(FIG_W_TRACE, FIG_H))
     _draw_trace_and_bands(ax, trace, cycle_info, max_time,
-                          group1_size, label_group1, label_group2)
+                          group1_size, label_group1, label_group2, convert)
 
     ax.set_title(
         f"Particles per frame and {label_group2}/{label_group1} ratio"
     )
-    ax.set_xlabel("Time (frame)")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel(NORM_YLABEL if normalize else "Number of Particles")
     ax.grid(alpha=0.3)
 
     # Per-cycle ratio, anchored at each cycle's centre frame.
     spans = _cycle_spans(cycle_info)
     ratios = summary[f"{label_group2}_over_{label_group1}"].tolist()
-    centres = [(spans[c][0] + spans[c][1]) / 2 for c in summary["cycle"]]
+    centres = [convert((spans[c][0] + spans[c][1]) / 2)
+               for c in summary["cycle"]]
 
     ratio_color = "tab:green"
     ax_ratio = ax.twinx()
@@ -630,22 +684,26 @@ def main():
                                   args.skip_frames)
     make_combined_graph(particles_per_frame, cycle_info, max_time,
                         args.group1_size, args.group2_size, args.skip_frames,
-                        args.label_group1, args.label_group2, graph_path)
+                        args.label_group1, args.label_group2, graph_path,
+                        frame_interval_ms=args.frame_interval_ms)
     make_combined_graph(particles_per_frame, cycle_info, max_time,
                         args.group1_size, args.group2_size, args.skip_frames,
                         args.label_group1, args.label_group2, graph_norm_path,
-                        normalize=True)
+                        normalize=True,
+                        frame_interval_ms=args.frame_interval_ms)
     make_combined_ratio_graph(particles_per_frame, cycle_info, max_time,
                               args.group1_size, args.group2_size,
                               args.skip_frames, args.label_group1,
                               args.label_group2, combine_ratio_path,
-                              ratio_frame_fraction=args.ratio_frame_fraction)
+                              ratio_frame_fraction=args.ratio_frame_fraction,
+                              frame_interval_ms=args.frame_interval_ms)
     make_combined_ratio_graph(particles_per_frame, cycle_info, max_time,
                               args.group1_size, args.group2_size,
                               args.skip_frames, args.label_group1,
                               args.label_group2, combine_ratio_norm_path,
                               ratio_frame_fraction=args.ratio_frame_fraction,
-                              normalize=True)
+                              normalize=True,
+                              frame_interval_ms=args.frame_interval_ms)
     make_ratio_graph(particles_per_frame, cycle_info,
                      args.label_group1, args.label_group2, ratio_path,
                      ratio_frame_fraction=args.ratio_frame_fraction)
