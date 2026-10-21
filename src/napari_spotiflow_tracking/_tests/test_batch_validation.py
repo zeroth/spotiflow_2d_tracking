@@ -60,7 +60,7 @@ def test_collects_all_errors(demo):
         output_dir="",
         device="gpu",
         measure_on="denoised",
-        detection={"method": "dog"},
+        detection={"method": "dog", "fit": {"enabled": False}},
         outputs={"formats": ["png", "tiff"], "save_masks": True},
         preprocessing={"steps": [{"sharpen": {}}]},
         tracking={"enabled": False},
@@ -94,16 +94,25 @@ def test_unknown_output_name_warns(demo):
         validate(_cfg(analyses={"demo": {"figures": ["plots"]}}))
 
 
-def test_fit_needs_torchimize(monkeypatch):
-    monkeypatch.setattr("napari_spotiflow_tracking.batch.validation.torchimize_available",
-                        lambda: False)
-    with pytest.raises(ConfigError, match="torchimize"):
-        validate(_cfg(detection={"fit": {"enabled": True}}))
+def test_fit_does_not_require_torchimize():
+    """The scipy fallback means a missing torchimize is not a config error."""
+    validate(_cfg(detection={"fit": {"enabled": True}}))
+
+
+def test_save_masks_still_needs_fitting():
+    with pytest.raises(ConfigError, match="outputs.save_masks needs detection.fit.enabled"):
+        validate(_cfg(detection={"fit": {"enabled": False}},
+                      outputs={"save_masks": True}))
 
 
 def test_analysis_section_must_be_mapping(demo):
     with pytest.raises(ConfigError, match="analyses.demo must be a mapping"):
         validate(_cfg(analyses={"demo": [1, 2]}))
+
+
+class Pre(Analysis):
+    name = "pre"
+    default_measure_on = "preprocessed"
 
 
 def test_measure_on_for_resolution_order(demo):
@@ -119,10 +128,28 @@ def test_measure_on_for_resolution_order(demo):
     assert measure_on_for(Blind(), {"measure_on": "raw"}, cfg) is None
 
 
+def test_measure_on_falls_back_to_the_analysis_default(demo):
+    """Unset (the default) means "the analysis decides", not "raw"."""
+    cfg = _cfg()
+    assert cfg.measure_on is None
+    assert measure_on_for(demo, {}, cfg) == "raw"           # Demo keeps the base default
+    assert measure_on_for(Pre(), {}, cfg) == "preprocessed"
+    # an explicit value still wins, at either level
+    assert measure_on_for(Pre(), {"measure_on": "raw"}, cfg) == "raw"
+    assert measure_on_for(Pre(), {}, _cfg(measure_on="raw")) == "raw"
+
+
+def test_unset_measure_on_is_valid():
+    """``measure_on: null`` is the default and must not be rejected."""
+    validate(_cfg(measure_on=None))
+
+
 def test_analysis_measure_on_is_validated(demo):
     with pytest.raises(ConfigError, match="analyses.demo.measure_on must be raw or preprocessed"):
         validate(_cfg(analyses={"demo": {"measure_on": "denoised"}}))
     validate(_cfg(tracking={"enabled": True},
                   analyses={"demo": {"measure_on": "preprocessed"}}))
+    # unset is fine — the analysis decides
+    validate(_cfg(tracking={"enabled": True}, analyses={"demo": {"measure_on": None}}))
     # a disabled analysis is not checked
     validate(_cfg(analyses={"demo": {"enabled": False, "measure_on": "denoised"}}))

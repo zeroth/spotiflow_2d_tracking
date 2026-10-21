@@ -13,8 +13,33 @@ modality: tracking
 # One entry per condition. Each becomes a group: its own output folder, its own
 # colour in every figure, and its own summary. `label` names it; without one the
 # folder name is used.
+#
+# An entry may also carry `settings` (defaults for every movie in that group)
+# and `per_file` (exceptions for individual movies). Values resolve global ->
+# `settings` -> `per_file`, each overriding only the keys it names, so the
+# global block below still supplies everything else. Overridable sections:
+# preprocessing, detection, tracking, calibration, measure_on, analyses.
 inputs:
-  - {path: 'D:/Data/control', label: Control}
+  - path: 'D:/Data/control'
+    label: Control
+    # Every movie in this group detects a little more eagerly than the global
+    # 0.5; `min_distance` and the rest of `detection` stay as set below.
+    settings:
+      detection: {spotiflow: {prob_thresh: 0.45}}
+    # Exceptions, keyed by file name, by movie id (the output folder name), or
+    # by glob. An exact name beats a glob; a key matching nothing, or two globs
+    # matching one movie, is a config error that `validate` catches.
+    per_file:
+      cell03.tif:
+        detection: {spotiflow: {prob_thresh: 0.6}}   # dimmer field
+      'low_snr_*':
+        # Lists replace rather than merge, so a `steps:` override is that
+        # movie's whole chain — repeat the global steps you still want.
+        preprocessing:
+          steps:
+            - walking_average: {window: 4}
+            - subtract: {value: mean}
+            - gaussian_blur: {sigma: 1.5}
   - {path: 'D:/Data/drug_10uM', label: Drug 10 µM}
 output_dir: 'D:/Results/2026-09-18_drug_screen'
 
@@ -40,13 +65,27 @@ preprocessing:
 detection:
   method: spotiflow
   spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}
+  # On by default: torchimize when available, else a per-frame scipy fallback.
+  fit: {enabled: true, window: 2, max_radius: 2.0}
 
 tracking:
   enabled: true
   search_range: 5.0
   memory: 3
-  min_track_length: 5
 
 outputs:
   formats: [png, svg]
   dpi: 300
+  save_masks: true       # mask.tif written alongside spots.csv unless set false
+
+# `spotiflow-batch list-outputs msd` lists the figure names accepted by `figures:`.
+# Naming figures replaces `all` at every level at once — a list of comparison
+# figures also switches off the per-movie and per-group ones, so name those too.
+analyses:
+  msd:
+    max_lag: 25           # longest lag fitted, in frames
+    min_length: 5         # shortest track admitted to the fits
+    sigma_nm: 35          # static localization error, used only with calibration
+    max_tracks_plot: 200  # cap for the per-track figures
+    figures: all
+    tables: all

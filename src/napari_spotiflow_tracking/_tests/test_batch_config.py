@@ -15,6 +15,7 @@ from napari_spotiflow_tracking.batch.config import (
     parse_override,
     write_resolved_config,
 )
+from napari_spotiflow_tracking.batch.validation import validate
 
 
 def _write(tmp_path, data):
@@ -141,6 +142,39 @@ def test_scalar_types_are_checked(data, message):
     with pytest.raises(ConfigError) as info:
         load_config(data=data)
     assert message in str(info.value)
+
+
+def test_fitting_and_masks_are_on_by_default():
+    cfg = load_config(data={})
+    assert cfg.detection.fit.enabled is True
+    assert cfg.outputs.save_masks is True
+
+
+@pytest.mark.parametrize("modality", ["tracking", "bleaching"])  # papa opts out deliberately
+def test_every_preset_fits(modality):
+    cfg = load_config(data={"modality": modality})
+    assert cfg.detection.fit.enabled is True
+
+
+def test_papa_preset_opts_out_of_fitting_and_masks():
+    """PAPA only counts spots; it never reads the fit columns or the mask, so
+    the preset turns off Task 10's fit-and-mask defaults (both keys are
+    required together: validation needs masks off when fitting is off)."""
+    cfg = load_config(data={"modality": "papa", "inputs": ["x.tif"], "output_dir": "out"})
+    assert cfg.detection.fit.enabled is False
+    assert cfg.outputs.save_masks is False
+    validate(cfg)
+
+
+def test_tracking_has_no_min_track_length():
+    """The minimum length belongs to the analysis, not to tracking."""
+    cfg = load_config(data={})
+    assert not hasattr(cfg.tracking, "min_track_length")
+
+
+def test_min_track_length_in_a_config_warns_and_is_ignored():
+    with pytest.warns(ConfigWarning, match="tracking.min_track_length"):
+        load_config(data={"tracking": {"min_track_length": 10}})
 
 
 def test_optional_accepts_null_and_int_becomes_float():

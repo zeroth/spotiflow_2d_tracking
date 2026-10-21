@@ -38,6 +38,12 @@ class InputSpec:
     pattern: str = "*.tif"
     recursive: bool = False
     color: Optional[str] = None
+    # Per-movie overrides (see batch/overrides.py): ``settings`` applies to every
+    # movie in this entry, ``per_file`` to movies matching its keys. Both are
+    # restricted to overrides.ALLOWED_SECTIONS; validated in validation.validate
+    # and batch/overrides.validate_all (which needs the expanded jobs).
+    settings: Dict[str, Any] = field(default_factory=dict)
+    per_file: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -67,7 +73,11 @@ class LogSettings:
 
 @dataclass
 class FitSettings:
-    enabled: bool = False
+    # On by default: every spot is fitted with a 2D Gaussian, using the batched
+    # torchimize backend when importable and a per-frame scipy fallback otherwise
+    # (see batch/detect.py:fit_backend). spots.csv always carries the fit and
+    # region-property columns as a result.
+    enabled: bool = True
     window: int = 2
     max_radius: Optional[float] = 2.0
 
@@ -85,7 +95,6 @@ class TrackingSettings:
     enabled: bool = True
     search_range: float = 3.0
     memory: int = 10
-    min_track_length: int = 5
 
 
 @dataclass
@@ -93,7 +102,9 @@ class OutputSettings:
     formats: List[str] = field(default_factory=lambda: ["png", "svg"])
     dpi: int = 300
     save_preprocessed: bool = False
-    save_masks: bool = False
+    # On by default: mask.tif is written alongside spots.csv unless set to false.
+    # Requires detection.fit.enabled (the mask comes from the Gaussian fit).
+    save_masks: bool = True
 
 
 @dataclass
@@ -112,7 +123,10 @@ class PipelineConfig:
     preprocessing: PreprocessingSettings = field(default_factory=PreprocessingSettings)
     detection: DetectionSettings = field(default_factory=DetectionSettings)
     tracking: TrackingSettings = field(default_factory=TrackingSettings)
-    measure_on: str = "raw"
+    # Unset means "each analysis's own default" (Analysis.default_measure_on);
+    # an explicit "raw"/"preprocessed" here overrides every analysis that does
+    # not set its own analyses.<name>.measure_on.
+    measure_on: Optional[str] = None
     outputs: OutputSettings = field(default_factory=OutputSettings)
     analyses: Dict[str, Any] = field(default_factory=dict)
 
@@ -262,6 +276,18 @@ def _build(cls, data: Any, where: str):
     return cls(**kwargs)
 
 
+def build_config(data: dict) -> PipelineConfig:
+    """Build a :class:`PipelineConfig` from an already-merged raw dict.
+
+    The public counterpart of ``_build(PipelineConfig, data, "")`` for callers
+    outside this module (e.g. ``batch.overrides.config_for``, which re-merges
+    an already-resolved config with a movie's override) that want the same
+    type-checking and unknown-key warnings ``load_config`` gets, without
+    reaching for a private helper.
+    """
+    return _build(PipelineConfig, data, "")
+
+
 def load_config(
     path: Optional[Path] = None,
     overrides: Sequence[str] = (),
@@ -285,7 +311,7 @@ def load_config(
     modality = user.get("modality", "tracking")
     merged = deep_merge(load_preset(modality), user)
     merged["modality"] = modality
-    return _build(PipelineConfig, merged, "")
+    return build_config(merged)
 
 
 def config_to_dict(cfg: PipelineConfig) -> dict:

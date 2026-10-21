@@ -84,11 +84,11 @@ FIG_W_PANEL = 4.5
 # Type is sized for a figure printed at column width, so the axis values and
 # labels stay legible after downscaling. Bigger type means fewer tick labels
 # fit — _thin_ticks drops alternate ones at save time to make room.
-FONT_TICK = 15
-FONT_LABEL = 17
-FONT_TITLE = 13
-FONT_ANNOT = 12          # in-plot annotations and legends
-FONT_ANNOT_SMALL = 10    # the same, where a panel is too tight for FONT_ANNOT
+FONT_TICK = 17
+FONT_LABEL = 19
+FONT_TITLE = 15
+FONT_ANNOT = 14          # in-plot annotations and legends
+FONT_ANNOT_SMALL = 12    # the same, where a panel is too tight for FONT_ANNOT
 plt.rcParams.update({
     "font.size": FONT_TICK,
     "axes.labelsize": FONT_LABEL,
@@ -579,11 +579,36 @@ def _thin_ticks(ax) -> None:
         )
 
 
+def _fit_titles(fig) -> None:
+    """Shrink any title too wide for the canvas until it fits.
+
+    A handful of titles carry a calibration string or a normalisation
+    constant, and at FONT_TITLE those run off the edge of a fixed-width
+    figure — something tight_layout does not correct, since it fits the axes
+    and not the text above them. Only the titles that overrun lose a point;
+    every other one keeps FONT_TITLE.
+    """
+    renderer = fig.canvas.get_renderer()
+    limit = fig.bbox.width
+    for ax in fig.axes:
+        title = ax.title
+        if not title.get_text().strip():
+            continue
+        size = title.get_fontsize()
+        while size > FONT_ANNOT_SMALL:
+            box = title.get_window_extent(renderer=renderer)
+            if box.x0 >= 0 and box.x1 <= limit:
+                break
+            size -= 1
+            title.set_fontsize(size)
+
+
 def _save(fig, out_path: Path) -> None:
     """Thin the tick labels of every panel, then write the figure out."""
     fig.canvas.draw()  # settles the limits, so the tick positions are final
     for ax in fig.axes:
         _thin_ticks(ax)
+    _fit_titles(fig)
     fig.savefig(out_path, dpi=FIG_DPI, facecolor="white")
     plt.close(fig)
 
@@ -909,9 +934,12 @@ def _plot_d_vs_alpha(fits: pd.DataFrame, cal: Calibration, out_path: Path) -> No
     # Explicit margins rather than tight_layout: the shared-axis marginals are
     # not tight_layout-compatible, and a fixed layout keeps this figure the same
     # size as every other one.
+    # top is lower than the plain 0.92 this figure used to carry: the corner
+    # legend's three two-line entries grow up out of their cell, and at the
+    # print type sizes the first entry ran off the top of the canvas.
     gs = fig.add_gridspec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4],
                           wspace=0.05, hspace=0.05,
-                          left=0.17, right=0.97, top=0.92, bottom=0.15)
+                          left=0.17, right=0.97, top=0.86, bottom=0.15)
     ax = fig.add_subplot(gs[1, 0])
     ax_top = fig.add_subplot(gs[0, 0], sharex=ax)
     ax_right = fig.add_subplot(gs[1, 1], sharey=ax)

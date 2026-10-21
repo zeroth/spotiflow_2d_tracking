@@ -4,5 +4,12 @@ preprocessing:
 detection:
   method: spotiflow
   spotiflow: {model: general, prob_thresh: null, min_distance: 1}
+  # PAPA only counts spots; it never reads the fit columns or the mask (the
+  # old script painted a fixed-radius uint8 mask rather than fitting), so it
+  # opts out of Task 10's fit-and-mask defaults. Both keys are needed:
+  # validation requires masks off when fitting is off.
+  fit: {enabled: false}
 tracking:
   enabled: false
+outputs:
+  save_masks: false

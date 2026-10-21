@@ -4,15 +4,25 @@
 #   spotiflow-batch run examples/batch/bleaching_single_movie.yaml
 #
 # The `bleaching` preset supplies subtract mean -> blur 1 and tight linking
-# (search 3, memory 10, min_track_length 10), so this file only names the
-# input, the output and what differs.
+# (search 3, memory 10), so this file only names the input, the output and
+# what differs.
 
 modality: bleaching
 
 # A single movie works as an input; the group is named after the file unless
 # you give a label.
+#
+# With more movies in the group, `settings:` (group-wide) and `per_file:`
+# (per movie, keyed by file name, movie id or glob) override anything below
+# for those movies only -- see examples/batch/two_conditions.yaml for the
+# matching rules. Overridable: preprocessing, detection, tracking,
+# calibration, measure_on, analyses.
 inputs:
-  - {path: 'D:/Data/field2.tif', label: field2}
+  - path: 'D:/Data/field2.tif'
+    label: field2
+    # per_file:
+    #   field2.tif:
+    #     detection: {spotiflow: {prob_thresh: 0.6}}
 output_dir: 'D:/Results/field2_bleaching'
 
 device: cuda
@@ -25,14 +35,16 @@ measure_on: raw
 detection:
   method: spotiflow
   spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}
+  # On by default: torchimize when available, else a per-frame scipy fallback.
+  fit: {enabled: true, window: 2, max_radius: 2.0}
 
 tracking:
   enabled: true
   search_range: 3.0
   memory: 10
-  min_track_length: 10
 
 outputs:
   formats: [png]
   dpi: 300
   save_preprocessed: false
+  save_masks: true       # mask.tif written alongside spots.csv unless set false

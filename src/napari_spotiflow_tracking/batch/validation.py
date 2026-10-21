@@ -6,8 +6,8 @@ import warnings
 
 from .analyses import base
 from .config import FIGURE_FORMATS, MODALITIES, ConfigError, ConfigWarning, PipelineConfig
-from .detect import torchimize_available
 from .outputs import OutputSelector
+from .overrides import validate_override_sections
 from .preprocess import validate_steps
 
 
@@ -20,17 +20,25 @@ def validate(cfg: PipelineConfig) -> None:
     for index, spec in enumerate(cfg.inputs):
         if not spec.path:
             errors.append(f"inputs[{index}].path is required")
+        if spec.settings:
+            errors.extend(validate_override_sections(spec.settings, f"inputs[{index}].settings"))
+        per_file = spec.per_file
+        if per_file and not isinstance(per_file, dict):
+            errors.append(f"inputs[{index}].per_file must be a mapping, "
+                          f"got {type(per_file).__name__}")
+        else:
+            for key, section in (per_file or {}).items():
+                errors.extend(
+                    validate_override_sections(section, f"inputs[{index}].per_file.{key}"))
     if not cfg.output_dir:
         errors.append("output_dir is required")
     if cfg.device not in ("cuda", "cpu"):
         errors.append("device must be cuda or cpu")
-    if cfg.measure_on not in ("raw", "preprocessed"):
+    # Unset is the default ("the analysis decides"); only an explicit value is checked.
+    if cfg.measure_on is not None and cfg.measure_on not in ("raw", "preprocessed"):
         errors.append("measure_on must be raw or preprocessed")
     if cfg.detection.method not in ("spotiflow", "log"):
         errors.append("detection.method must be spotiflow or log")
-    if cfg.detection.fit.enabled and not torchimize_available():
-        errors.append("detection.fit.enabled needs the optional 'torchimize' package "
-                      "(pip install torchimize)")
     if cfg.outputs.save_masks and not cfg.detection.fit.enabled:
         errors.append("outputs.save_masks needs detection.fit.enabled "
                       "(masks come from the Gaussian fit)")

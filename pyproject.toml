@@ -51,3 +51,4 @@ napari_spotiflow_tracking = ["napari.yaml", "batch/presets/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/napari_spotiflow_tracking/_tests"]
+markers = ["slow: opt-in tests that run the old bulk script for comparison"]

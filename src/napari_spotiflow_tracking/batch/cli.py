@@ -14,6 +14,7 @@ import yaml
 from .analyses import base
 from .config import MODALITIES, ConfigError, config_to_dict, load_config
 from .inputs import expand_inputs
+from .overrides import validate_all
 from .runner import run
 from .validation import validate
 
@@ -23,11 +24,14 @@ SECTION_HELP = {
     "calibration": "Set both to report lengths in µm and times in s.",
     "preprocessing": "Steps run top to bottom. Available: crop, add, subtract, "
                      "walking_average, gaussian_blur, background, n2v.",
-    "detection": "method: spotiflow or log. fit.enabled adds a 2D Gaussian fit and "
-                 "spot masks (needs torchimize).",
-    "tracking": "trackpy linking; tracks shorter than min_track_length are dropped.",
-    "measure_on": "raw or preprocessed: the movie analyses read intensities from, "
-                  "unless an analysis overrides it.",
+    "detection": "method: spotiflow or log. fit.enabled (on by default) adds a 2D "
+                 "Gaussian fit and spot masks: torchimize when available, else the "
+                 "scipy fallback.",
+    "tracking": "trackpy linking; every linked track is written, and each analysis "
+                "applies its own minimum length.",
+    "measure_on": "raw or preprocessed: the movie analyses read intensities from. "
+                  "Unset (null) means each analysis decides for itself; a value "
+                  "here overrides every analysis that sets no measure_on of its own.",
     "outputs": "formats: any of png, pdf, svg.",
     "analyses": "Enabled analyses and their settings; `spotiflow-batch list-outputs` "
                 "lists figure and table names.",
@@ -112,6 +116,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.command == "validate":
             validate(cfg)
             jobs = expand_inputs(cfg)
+            validate_all(cfg, jobs)
             groups = {job.group for job in jobs}
             print(f"config OK: {len(jobs)} movie(s) in {len(groups)} group(s)")
             return 0

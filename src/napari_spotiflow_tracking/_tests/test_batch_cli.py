@@ -57,6 +57,20 @@ def test_validate_reports_movies(tmp_path, empty_registry, capsys):
     assert "config OK: 1 movie(s) in 1 group(s)" in capsys.readouterr().out
 
 
+def test_validate_reports_an_unmatched_per_file_key(tmp_path, empty_registry, capsys):
+    movie = tmp_path / "g" / "m.tif"
+    movie.parent.mkdir()
+    tifffile.imwrite(str(movie), np.zeros((2, 8, 8), np.uint16))
+    config = tmp_path / "c.yaml"
+    config.write_text(yaml.safe_dump({
+        "inputs": [{"path": str(movie.parent), "label": "g",
+                   "per_file": {"typo_cell.tif": {"tracking": {"memory": 2}}}}],
+        "output_dir": str(tmp_path / "out"),
+    }))
+    assert cli.main(["validate", str(config)]) == 2
+    assert "typo_cell.tif" in capsys.readouterr().err
+
+
 def test_config_error_exit_code(tmp_path, empty_registry, capsys):
     config = tmp_path / "c.yaml"
     config.write_text(yaml.safe_dump({"inputs": [], "output_dir": ""}))

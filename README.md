@@ -124,8 +124,10 @@ spotiflow-batch run my_run.yaml                       # process every movie
 spotiflow-batch list-outputs                          # figures/tables the analyses can write
 ```
 
-A run pre-processes each movie, detects spots, optionally fits 2D Gaussians and
-masks, links tracks, and writes one folder per movie plus a run-level summary.
+A run pre-processes each movie, detects spots, fits 2D Gaussians and spot masks
+(on by default), links tracks, then runs every enabled analysis — per movie,
+per group and across groups — writing one folder per movie plus a run-level
+summary.
 
 ### The config
 
@@ -163,21 +165,23 @@ detection:
   method: spotiflow           # spotiflow | log
   spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}
   log: {min_sigma: 2, max_sigma: 10, num_sigma: 10, threshold: 0.09}
-  fit: {enabled: false, window: 2, max_radius: 2.0}   # 2D Gaussian + masks; needs torchimize
+  fit: {enabled: true, window: 2, max_radius: 2.0}   # 2D Gaussian + masks; torchimize when available, else scipy
 
 tracking:
   enabled: true
   search_range: 3
   memory: 10
-  min_track_length: 5
 
-measure_on: raw               # raw | preprocessed — where intensities are read
+measure_on: null              # raw | preprocessed; unset = each analysis decides for itself
 
 outputs:
   formats: [png, svg]
   dpi: 300
   save_preprocessed: false
-  save_masks: false
+  save_masks: true            # large: see Outputs
+
+analyses:                     # enabled analyses and their settings — see Analyses
+  msd: {}                     # the `tracking` preset already enables this one
 ```
 
 Any value can be overridden on the command line, so one config covers a sweep:
@@ -191,15 +195,82 @@ Unknown keys warn and are ignored; wrong types, missing inputs and impossible
 combinations are reported together, before any movie is read. `validate` runs
 exactly those checks and nothing else.
 
+`measure_on` is unset by default, which means every analysis reads intensities
+from whichever movie its own science calls for — `msd`, for one, samples the
+preprocessed stack. Set it to `raw` or `preprocessed` to force one stack on
+every analysis at once (the `bleaching` preset does exactly that, since its
+uint16 mean subtraction clips the background to zero), or set
+`analyses.<name>.measure_on` to change just one analysis.
+
+### Per-group and per-file overrides
+
+A single input entry can carry its own settings, and individual movies within
+it can carry exceptions on top of those:
+
+```yaml
+preprocessing:
+  steps: [{walking_average: {window: 4}}, {subtract: {value: mean}}]   # global layer
+detection: {spotiflow: {prob_thresh: 0.5}}      # global layer
+
+inputs:
+  - path: D:/Data/control
+    label: Control
+    settings:                                    # group layer: every movie in this entry
+      detection: {spotiflow: {prob_thresh: 0.45}}
+    per_file:                                    # file layer: exceptions
+      cell03.tif: {detection: {spotiflow: {prob_thresh: 0.6}}}
+      "low_snr_*":                                # a list replaces, not merges (see below),
+        preprocessing:                            # so this repeats the global steps and
+          steps: [{walking_average: {window: 4}}, {subtract: {value: mean}},
+                  {gaussian_blur: {sigma: 1.5}}]   # adds the extra blur
+```
+
+`settings` and `per_file` values are restricted to the same six sections a
+movie can reasonably own: `preprocessing`, `detection`, `tracking`,
+`calibration`, `measure_on`, `analyses`. Anything else (`device`, `outputs`,
+`output_dir`, `skip_existing`, `inputs` itself) is a config error naming the
+offending key — those describe the run, not a movie, and letting one movie
+pick its own dpi or device would make a run impossible to reason about.
+
+Per movie, later wins, deep-merged so naming one leaf key (e.g.
+`detection.spotiflow.prob_thresh`) leaves the rest of that section untouched:
+
+    dataclass defaults < modality preset < global YAML < --set
+        < group `settings` < matching `per_file`
+
+Merging is deep for mappings but a list is replaced whole, same as `deep_merge`
+everywhere else in this config — so a `preprocessing.steps` override is not
+"one more step tacked on", it is that movie's *entire* pipeline, as the
+`low_snr_*` example above repeats.
+
+`--set` still edits the global layer: `--set detection.spotiflow.prob_thresh=0.4`
+sweeps every movie except the ones a config has pinned with `settings` or
+`per_file`.
+
+A `per_file` key matches a movie when it equals, in order of specificity: the
+file name (`cell03.tif`), the movie id (`cell03`, or `day1__cell03` for a
+recursive input — the same id `expand_inputs` uses as the output folder
+name), or a glob (`fnmatch`) against either. An exact match always beats a
+glob; two globs matching the same movie, or a `per_file` key matching no
+movie in its entry, are both config errors — a typo'd file name silently
+doing nothing is the worst failure mode here, so the run fails before the
+first movie loads rather than quietly ignoring it.
+
+Each movie's own `resolved_config.yaml` (in its output folder, beside the
+run-level one) shows the config it actually ran with. If a group's movies end
+up with different effective `preprocessing`/`detection` settings, `run.log`
+gets one warning per such group, since its group summary and any comparison
+figures pool them regardless.
+
 ### Modalities
 
 `modality` picks a preset of defaults, which your config then overrides:
 
-| Modality | Preprocessing | Tracking |
-|---|---|---|
-| `tracking` | walking average 4 → subtract mean → blur σ 1 | on, search 5, memory 3 |
-| `papa` | none | off |
-| `bleaching` | subtract mean → blur σ 1 | on, search 3, memory 10 |
+| Modality | Preprocessing | Tracking | Fitting / masks |
+|---|---|---|---|
+| `tracking` | walking average 4 → subtract mean → blur σ 1 | on, search 5, memory 3 | on |
+| `papa` | none | off | off — PAPA only counts spots; no fit, no `mask.tif` |
+| `bleaching` | subtract mean → blur σ 1 | on, search 3, memory 10 | on |
 
 ### Choosing a detector
 
@@ -220,15 +291,48 @@ downstream is the same either way, and `run.log` records what ran.
   run.log
   <group>/<movie>/
     spots.csv, tracks.csv
-    preprocessed.tif, mask.tif      only when asked for
-    movie_status.json               marks the movie complete, for skip_existing
+    preprocessed.tif                 only when save_preprocessed: true
+    mask.tif                         written unless save_masks: false
+    movie_status.json                marks the movie complete, for skip_existing
+    <analysis>/                      that analysis's per-movie tables and figures
+  <group>/_summary/<analysis>/       the group's movies pooled
+  _comparison/<analysis>/            only when the run has more than one group
 ```
+
+Every spot is fitted with a 2D Gaussian by default (`detection.fit.enabled: true`), so
+`spots.csv` carries the fit and region-property columns (`amp`, `x_fit`, `y_fit`,
+`sigma_x`, `sigma_y`, `bg`, `area`, `mean_intensity`, `max_intensity`,
+`spot_radius`), and `mask.tif` is written unless `outputs.save_masks` is set to
+`false`. The `papa` preset is the exception: it sets `detection.fit.enabled: false`
+and `outputs.save_masks: false`, since PAPA only counts spots and never reads the
+fit columns or the mask. Fitting uses the batched `torchimize` backend on a GPU device when it is
+importable, and a per-frame `scipy` fallback otherwise (including whenever
+`device: cpu`, since the batched solver's CPU path has a known numerical-stability
+issue), so it needs no extra install to be on by default. The two backends produce
+the same schema and closely matching values — not bit-identical, since the scipy
+fit bounds its search while the batched fit does not — and the fallback is slower
+(roughly 5x on one 15,457-spot, 827-frame movie in testing) but not prohibitively so.
+
+`mask.tif` is a labelled `(T, Y, X)` int32 stack the full size of the movie, so
+it is the largest thing a run writes — of the order of 200 MB for one
+827-frame 256×256 movie, and tens of GB for a folder of a hundred. Set
+`outputs.save_masks: false` when you only want the tables and figures; the fit
+columns in `spots.csv` are unaffected.
+
+`tracks.csv` holds every track trackpy links, however short — nothing is dropped
+by length at write time. Each analysis applies its own minimum instead (e.g.
+`analyses.msd.min_length`), so lowering a threshold later is a re-analysis, not
+a re-detect/re-track.
 
 One movie failing does not stop the run: its traceback goes to `run.log`, its
 row reads `FAIL`, and the rest carry on. The command exits 0 when everything
 worked, 1 when any movie failed, and 2 when the config itself is wrong — so a
 wrapping script can tell the difference. With `skip_existing: true` a rerun
 skips movies that finished and reuses spots and tracks for movies that did not.
+Output folders written before this change hold a `tracks.csv` that was already
+filtered by the old `tracking.min_track_length`; resuming with `skip_existing`
+reuses that filtered file as-is, so if you want the unfiltered set, re-run
+those movies from scratch or delete their `tracks.csv` first.
 
 ### Opening the results in napari
 
@@ -241,25 +345,59 @@ the track columns is declined, so other CSVs open as they always did.
 
 ### Analyses
 
-**This version ships no analyses yet** — a run does pre-processing, detection
-and tracking, and `spotiflow-batch list-outputs` reports that none are
-registered. MSD with motility classification, PAPA cycle counts and
-photobleaching-step analysis are being ported into the pipeline.
+Detection and tracking run once per movie, and every enabled analysis reads
+those results, writing tables and figures per movie, per group, and across
+groups. `spotiflow-batch list-outputs <name>` lists what an analysis can write,
+and `figures`/`tables` select from it (`all`, `none`, or a list of names).
+One list covers every level at once: anything not named is off per movie, per
+group *and* across groups, so `figures: [motility_comparison]` writes that one
+comparison figure and nothing else — name the per-movie and per-group figures
+too if you want them. Unknown names warn and are ignored.
 
-Once an analysis is available it is enabled in the config, and
-`list-outputs <name>` lists the figures and tables it can write, which you can
-then select:
+**`msd`** — mean squared displacement and motility classification, enabled by
+the `tracking` preset:
 
 ```yaml
 analyses:
-  bleaching:
-    roi_size: 3
-    figures: [representative_traces]     # or: all | none
+  msd:
+    max_lag: 25           # longest lag fitted, in frames
+    min_length: 5         # shortest track admitted to the fits
+    sigma_nm: 35          # static localization error, used only with calibration
+    max_tracks_plot: 200  # cap for the per-track figures
+    measure_on: null      # inherited; msd samples the preprocessed stack by default
+    figures: all
+    tables: all
 ```
 
-Detection and tracking run once per movie, and every enabled analysis reads
-those same results, writing its own tables and figures per movie, per group,
-and across groups.
+Every track's MSD is fitted with `MSD = 4·D·t^α + 4·σ²`, and α bins the track
+into **constrained** (α < 0.4), **diffusive** (0.4 ≤ α ≤ 1.2) or **directed**
+(α > 1.2), following the motility analysis in
+[Commun Biol 4, 137 (2021)](https://www.nature.com/articles/s42003-021-01740-y#Sec9).
+Per movie you get `msd_curves.csv`, `msd_fits.csv` and `track_analysis.csv`
+beside 15 figures — the regime map, the combined MSD curves, class shares, the
+D–α joint distribution, length/speed/displacement distributions, and the three
+explanatory figures (construction, archetypes, shape comparison) that follow
+Figure 1 of
+[Schirripa Spagnolo & Luin, *Int. J. Mol. Sci.* **25**, 8660 (2024)](https://pmc.ncbi.nlm.nih.gov/articles/PMC11354962/).
+
+`track_analysis.csv` carries each track's geometry, its intensity sampled from
+the preprocessed movie (see `measure_on`), and its D, α and class.
+
+Each group gets the same metrics pooled over its movies in
+`<group>/_summary/msd/` — `motility_summary.csv`, `group_fits.csv` and eight
+pooled figures, built by reading the per-movie CSVs back off disk, so a
+`skip_existing` rerun summarises the movies it skipped too. A run with more
+than one group also writes
+`_comparison/msd/`: overlaid group distributions, their density versions, the
+harmonised per-group figures on a shared axis range, and
+`comparison_summary.csv`. Group colours are assigned in `inputs` order and are
+the same in every figure of the run.
+
+With `calibration` set, D is reported in µm²/s^α and every axis reads µm and
+seconds; without it, px and frames (and σ is dropped, since a nanometre figure
+has no meaning in pixels).
+
+PAPA cycle counts and photobleaching-step analysis are being ported next.
 
 ## Running tests
 

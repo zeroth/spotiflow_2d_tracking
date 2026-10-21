@@ -49,13 +49,17 @@ One batch pipeline, inside the package, driven by a YAML config:
 | Location | Subpackage `napari_spotiflow_tracking.batch`, console command `spotiflow-batch` |
 | Config format | YAML, plus `--set key.path=value` CLI overrides |
 | Preprocessing | Ordered list of steps mirroring the GUI chain |
-| Intensity sampling | `measure_on: raw \| preprocessed`, global default with per-analysis override |
+| Intensity sampling | `measure_on: raw \| preprocessed`, unset by default (each analysis's `default_measure_on` decides); a global value overrides every analysis, a per-analysis value overrides both |
 | Modality | Preset of defaults; analyses are enable-able modules, combinable |
 | Inputs | List of entries (file or folder); each entry is a group |
 | Output selection | Per-analysis catalogue of named figures/tables; user lists names |
 | Unknown config keys / output names | Warning, not error |
 | Existing scripts | Left untouched |
 | Internals | Analysis plugins + dataclass config (no new framework) |
+| Fitting/masks | On by default; torchimize when importable, else the per-frame scipy fitter; mask.tif written unless save_masks is false. Exception: the `papa` preset sets both off — it only counts spots (user, 2026-09-18) |
+| Minimum track length | Per analysis (e.g. msd.min_length), never at tracking time — tracks.csv keeps every linked track (user, 2026-09-18) |
+| Output selection granularity | `figures`/`tables` are one list per analysis, applied at every level at once: naming `motility_comparison` also silences the per-movie and per-group figures. Per-level selection (`figures: {movie: [...], comparison: [...]}`) is to be settled before phase 3 (review, 2026-09-18) |
+| Per-group / per-file overrides | Each `inputs[]` entry may carry `settings` (applies to every movie in the entry) and `per_file` (keyed by file name, movie id, or a glob, matched in that order of specificity — exact beats glob; an ambiguous glob or a key matching no movie is a config error). Both are restricted to `preprocessing`, `detection`, `tracking`, `calibration`, `measure_on`, `analyses` — not the run-wide keys (`device`, `outputs`, `output_dir`, `skip_existing`, `inputs`), so a run stays reasoned-about as one thing. Resolution order: dataclass defaults < modality preset < global YAML < `--set` < group `settings` < matching `per_file`, all deep-merged. Each movie gets its own `resolved_config.yaml`; a group whose movies end up with different effective `preprocessing`/`detection` logs one `run.log` warning, since its group summary pools them regardless (user, 2026-09-21) |
 
 ## Architecture
 
@@ -119,8 +123,12 @@ to keep palette slots stable.
 
 `measure_on_for(analysis, settings, cfg)` resolves the movie an analysis
 samples: `None` when `default_measure_on == "none"`, else
-`analyses.<name>.measure_on` when set, else the top-level `measure_on`.
-Validation rejects an `analyses.<name>.measure_on` other than raw/preprocessed.
+`analyses.<name>.measure_on` when set, else the top-level `measure_on` when
+set, else the analysis's own `default_measure_on`. The top-level key is unset
+(`null`) by default so each analysis keeps the stack its science needs — `msd`
+the preprocessed movie, `bleaching` the raw one — and setting it is a
+deliberate, run-wide override. Validation rejects a `measure_on` other than
+raw/preprocessed at either level, but accepts unset at both.
 
 `OutputSpec(name, level: movie|group|comparison, kind: figure|table, description)`.
 Group and comparison hooks read the per-movie tables from disk, so they also
@@ -151,6 +159,13 @@ modality: tracking            # tracking | papa | bleaching
 inputs:
   - {path: D:/Data/control, label: Control, pattern: "*.tif", recursive: false, color: null}
   - {path: D:/Data/one_movie.tif}          # label defaults to the file/folder name
+  - path: D:/Data/drug
+    label: Drug
+    settings:                              # group layer: every movie in this entry
+      detection: {spotiflow: {prob_thresh: 0.45}}
+    per_file:                              # file layer: exceptions, matched by
+      cell03.tif: {detection: {spotiflow: {prob_thresh: 0.6}}}   # file name, movie id,
+      "low_snr_*": {preprocessing: {steps: [{gaussian_blur: {sigma: 1.5}}]}}   # or glob
 output_dir: D:/Results/run1
 skip_existing: false
 device: cuda                  # cuda | cpu; cuda unavailable → cpu with a warning
@@ -172,21 +187,20 @@ detection:
   method: spotiflow           # spotiflow | log
   spotiflow: {model: general, prob_thresh: 0.5, min_distance: 2}   # model: name or folder
   log: {min_sigma: 2, max_sigma: 10, num_sigma: 10, threshold: 0.09}
-  fit: {enabled: false, window: 2, max_radius: 2.0}   # needs torchimize
+  fit: {enabled: true, window: 2, max_radius: 2.0}   # torchimize when available, else scipy
 
 tracking:
   enabled: true
   search_range: 3
   memory: 10
-  min_track_length: 5
 
-measure_on: raw
+measure_on: null              # unset = each analysis decides; raw | preprocessed overrides them all
 
 outputs:
   formats: [png, svg]
   dpi: 300
   save_preprocessed: false
-  save_masks: false
+  save_masks: true
 
 analyses:
   msd: {...}
@@ -206,7 +220,7 @@ the function signatures and the Pre-Processing widget.
 | Preset | Tracking | Analyses enabled | Other defaults |
 |---|---|---|---|
 | `tracking` | on | `msd` | bulk script defaults: walking average 4 → subtract mean → blur σ 1; search 5, memory 3 |
-| `papa` | off | `papa` | no preprocessing; `papa.group1_size` / `group2_size` required (no default) |
+| `papa` | off | `papa` | no preprocessing; `papa.group1_size` / `group2_size` required (no default); opts out of fitting/masks (only counts spots) |
 | `bleaching` | on | `bleaching` | subtract mean → blur σ 1; search 3, memory 10 |
 
 ### Validation
@@ -372,6 +386,7 @@ Each phase gets its own implementation plan and ends usable.
    the run's `inputs` groups instead of sub-folders of a parent, and
    `skip_existing` lets already-processed folders be re-summarised without
    re-detecting.
+   **Done** (branch `feat/batch-msd`).
 3. **papa** analysis, with its group and comparison hooks on the layer
    phase 2 established.
 4. **bleaching** analysis, likewise.
